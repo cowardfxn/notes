@@ -88,7 +88,7 @@ Spark的Repl最主要的是实现了SparkIMain。
  2. 根据DAG将Job分割为多个Stage
  3. Stage一经确认，即生成相应的Task，将生成的Task分发到Excecutor执行
 
-![全部函数调用](file:///.img/runJob.jpg)
+![全部函数调用](https://github.com/cowardfxn/notes/blob/master/img/runJob.jpg)
 
 #####窄依赖与宽依赖
  - 窄依赖指父RDD的输出都会被指定的子RDD消费，输出路径是固定的
@@ -213,4 +213,168 @@ Metrics子系统的配置文件在$SPARK_HOME/conf/metrics.properties，默认�
 可以通过输入masterIP:4040/metrics/json获取JSON格式保存的Metrics信息。
 
 ###存储机制
+ShuffleMapTask的结果会被作为ResultTask的输入读取。
+
+ResultTask读取数据过程:
+
+ 1. ShuffleMapTask将计算的状态包装为MapStatus返回给DAGScheduler
+ 2. DAGScheduler将MapStatus保存到MapOutputTrackerMaster中
+ 3. ResultTask在调用shuffleRDD时会使用BlockStoreShuffleFetcher方法获取数据
+  - 询问MapOutputTrackerMaster所要去的数据的location
+  - 根据返回结果调用BlockManager.getMultiple获取真正的数据
+
+#####MapStatus数据结构
+ * 每个ShuffleMapTask都会用一个MapStatus保存计算结果。  
+ * MapStatus由blockManagerid和byteSize构成
+  - blockManagerid表示中间结果的实际数据存在哪个BlockManager
+  - byteSize表示不同reduceid所要读取的数据大小
+
+####Shuffle结果写入
+写入过程：  
+**ShuffleMapTask.runTask** -> **HashShuffleWriter.write** -> **BlockObjectWriter.write**
+
+HashShuffleWriter.write会对数据进行聚合，合并相同key的value(相加或合并到同一集合中)，然后利用Partitioner函数决定<k, val>写入哪个文件
+
+每个临时文件由(shuffle_id, map_id, reduce_id)决定，reduce_id由Partitioner计算得来，输入是元素的键值
+
+
+####Shuffle结果读取
+入口 ShuffleRDD.compute
+
+ShuffleMapTask产生的MapStatus中含有当前ShuffleMapTask产生的数据落到各个Partition中的大小(byteSize)，如果为0，则表示没有数据产生。
+byteSize的索引就是reduce_id(疑似)
+
+######btyeSize如何用8位空间表示更大的数据大小
+ - 使用1.1作为对数底，将\\(2^8\\)转换为\\(1.1^{256}\\)  
+ 即原本8位空间用来保存实际数据，现在用来保存`math.log(val)`的结果值
+ 表示的存储空间可以扩展到35G，误差最高10%
+
+Shuffle_id唯一标识一个Job中的Stage，需要遍历该Stage中的所有Task产生的MapStatus，才能确定是否有当前ResultTask需要读取的数据
+
+#####Spark内存消耗位置
+ - ShuffleMapTask和ResultTask都需要将计算结果保存在内存中，再写入磁盘
+ - ResultTask的combine阶段，利用HashMap缓存数据，如果数据量过大或Partition数目过多，都会消耗大量内存
+
+####Memory Store 内存读写
+主要由以下几个部分：
+ - CacheManager RDD计算时的读写内存数据接口
+ - BlockManager CacheManager实现读写数据的功能依赖模块，决定数据是从内存还是磁盘中获取
+ - MenmoryStore 内存数据读写模块
+ - DiskStore 磁盘数据读写模块
+ - BlockManagerWorker 备份数据到其他节点，或在出错时从备份恢复数据
+ - ConnectionManager 管理与其他节点的连接和数据的收发
+ - BlockManagerMaster 只允许在Driver Application所在的Executor，记录BlockId存储在哪个SlaveWorker上，提供路由功能
+
+#####数据写入过程
+![数据写入内存过程](file:///./img/memoryCache.jpg)
+
+ 1. RDD.iterator是与Storage子系统交互的入口
+ 2. CacheManager.getOrCompute调用BlockManager的put接口来写入数据
+ 3. 数据优先写入MemoryStore(内存), 如果内存已满，则将最近使用频率低的数据写入磁盘
+ 4. 通知BlockManagerMaster有新数据写入，在BlockManagerMaster中保存元数据
+ 5. 如果输入的数据备份数目大于1(参数设置为MEMORY\_ONLY\_2/MEMORY\_AND_DISK\_2)，则将写入的数据与其他Slave Worker同步
+
+#####数据读取
+BlockerManager.get
+
+优先读取本地，如果找不到则读取远程数据
+
+####Tachyon
+Master-Worker分布的分布式文件系统，架构类似Spark，已被整合进Spark，可以直接调用，但是存储系统独立于Spark系统之外，因此不受Spark内部Job崩溃的影响，数据可以保留。
+
+#####读取
+`val file = textFile("tachyon://ip:port/path")`
+
+#####写入
+```
+val file = sc.textFile("tachyon://ip:port/path")
+file.persist(OFF_HEAP)
+```
+实际存储到Tackyon中的方法 *putInfoTachyonStore*
+
+###部署方式
+ - 单机
+ - 伪集群
+ - 独立集群/原生集群
+ - YARN集群
+ - Mesos
+
+####单机模式
+`MASTER=local spark-shell`
+
+本地运行，Driver、Master、Worker、Executor都运行在同一个JVM进程中。
+容错性最差。
+
+ - local是单线程执行任务
+ - local[*]会创建最高机器内核数目个线程执行任务，可以用`spark.default.parallelism`设定
+
+####伪集群模式
+`MASTER=local-cluster[2, 2, 512] spark-shell`
+最后的512指内存设置，如果配置了spark-default.conf，则必须与其中的`spark.executor.memory`的值一致。
+
+Master、Worker、Executor都运行在本机，但是。。。
+
+ - Master和Worker运行于同一个JVM中，Executor单独运行
+ - Master、Worker、Executor只能运行在同一台机器上，无法跨物理机运行
+
+如果Executor出错，则Worker会重启Executor，但是如果Worker或Master出错，则整个Spark Cluster失效。
+
+####原生集群 Standalone Cluster
+![Standalone Cluster](https://github.com/cowardfxn/notes/blob/master/img/standAloneCluster.png)
+
+集群规模不大时，可用于生产环境
+
+Driver不能运行于Cluster内部，只能独立运行。
+三种类型的节点，各自运行于独立的JVM进程中：
+
+ - Master 主控节点，整个急群中最多只能有一个Master节点处于Active状态
+ - Worker 工作节点，负责与Master交互，可以有多个
+ - Executor 运行节点 直接被Worker控制，一个Worker可以启动多个Executor
+
+![StandaloneCluster启动过程](https://github.com/cowardfxn/notes/blob/master/img/standAloneClusterExec.png)
+
+
+####启动Master
+ 1. 配置信息读取，MasterArguments
+ 2. 创建Actor
+
+
+MasterArguments读取的环境变量包括：
+
+ - spark\_master\_host 监听地址
+ - spark\_master\_port 监听端口
+ - spark\_master\_webui\_port webui监听端口
+
+####启动Worker
+Worker运行时，需要注册spark-env.sh中配置的spark\_master\_ip、spark\_master\_port设定的Master URL。
+
+Worker需要向Master回报所在机器的CPU核数(inferDefaultCores)和物理内存大小(inferDefaultMemory)，而如果与CPU和内存相关的环境变量存在，则会优先使用环境变量设定的值。
+
+ - SPARK\_WORKER\_PORT 监听端口
+ - SPARK\_WORKER\_CORES CPU Cores数目
+ - SPARK\_WORKER\_MEMORY Worker可用内存
+ - SPARK\_WORKER\_WEBUI\_PORT WEBUI监听端口
+ - SPARK\_WORKER\_DIR Worker目录
+
+Worker启动后会向Master发起注册，注册消息中包含本Worker Node的核数和可用内存。*preStart* -> *registerWithMaster* -> *tryRegisterAllMaster*
+
+######Master收到RegisterWorker通知后处理
+ 1. 如果收到消息的Master处于Standby状态，则不作任何响应
+ 2. 判断是否重复的WorkerID，是则拒绝注册
+ 3. 如果以上两点皆不符合，则：
+  - 读取注册的Worker信息并保存
+  - 发送响应给Worker，确认注册成功
+  - 调用Schedule函数，将已经提交但没有分配资源的Application分发到新加入的Worker Node
+
+而Worker在收到Master的注册成功消息RegisteredWorker之后，会注册定时处理函数，定期向Master发送心跳消息SendHeartbeat，定期更新Master上存储的对应Worker节点的heartbeat时间。  
+同时Master上也会启动一个定时器，定期对原本处于Alive状态的Worker进行状态判断，如果Worker最近一次更新状态的时间到当前时间的差值大于定时器时长，则认为该Worker没有发送心跳消息，不再存活。
+实装逻辑里，Master上还会设定REAPER\_ITERATIONS，更新状态时间的差值大于多个定时器时长后，才会认为Worker不再存活。
+
+**如果判定Worker已不再存货，则使用removeWorker函数通知DriverApplication**
+
+Spark提供的启动Worker节点的脚本:  
+`SPARK_HOME/sbin/start-slaves.sh`  
+运行前提，运行Master和Worker的用户组和用户名要一致，否则Worker可能无法创建Executor
+
+####运行spark-shell
 
