@@ -209,7 +209,7 @@ Spark程序启动时，会启动一个Jetty的web服务，默认地址是masterI
   * MetricsServlet 在SparkUI中添加MetricsServlet，用以查看Task运行时的测量数据
   * GraphiteSink 发送给Graphite以对整个系统(不止Spark)进行监控
 
-Metrics子系统的配置文件在$SPARK_HOME/conf/metrics.properties，默认的Sink是MetricsServlet。  
+Metrics子系统的配置文件在SPARK_HOME/conf/metrics.properties，默认的Sink是MetricsServlet。  
 可以通过输入masterIP:4040/metrics/json获取JSON格式保存的Metrics信息。
 
 ###存储机制
@@ -266,7 +266,7 @@ Shuffle_id唯一标识一个Job中的Stage，需要遍历该Stage中的所有Tas
  - BlockManagerMaster 只允许在Driver Application所在的Executor，记录BlockId存储在哪个SlaveWorker上，提供路由功能
 
 #####数据写入过程
-![数据写入内存过程](file:///./img/memoryCache.jpg)
+![数据写入内存过程](https://github.com/cowardfxn/notes/blob/master/img/memoryCache.jpg)
 
  1. RDD.iterator是与Storage子系统交互的入口
  2. CacheManager.getOrCompute调用BlockManager的put接口来写入数据
@@ -334,7 +334,7 @@ Driver不能运行于Cluster内部，只能独立运行。
 ![StandaloneCluster启动过程](https://github.com/cowardfxn/notes/blob/master/img/standAloneClusterExec.png)
 
 
-####启动Master
+#####启动Master
  1. 配置信息读取，MasterArguments
  2. 创建Actor
 
@@ -345,7 +345,7 @@ MasterArguments读取的环境变量包括：
  - spark\_master\_port 监听端口
  - spark\_master\_webui\_port webui监听端口
 
-####启动Worker
+#####启动Worker
 Worker运行时，需要注册spark-env.sh中配置的spark\_master\_ip、spark\_master\_port设定的Master URL。
 
 Worker需要向Master回报所在机器的CPU核数(inferDefaultCores)和物理内存大小(inferDefaultMemory)，而如果与CPU和内存相关的环境变量存在，则会优先使用环境变量设定的值。
@@ -376,5 +376,232 @@ Spark提供的启动Worker节点的脚本:
 `SPARK_HOME/sbin/start-slaves.sh`  
 运行前提，运行Master和Worker的用户组和用户名要一致，否则Worker可能无法创建Executor
 
-####运行spark-shell
+#####运行spark-shell
+Executor是在Application被注册到Master时被连带启动的。
 
+启动spark-shell命令  
+`MASTER=spark://localhost:7077 spark-shell`
+
+Standalone模式下，每个Application的log都被保存在SPARK\_HOME/works目录中。  
+
+这个模式下，Master, Worker, Application Driver都运行在独立的JVM进程中。而SparkSubmit则与Application Driver运行于同一个进程。
+
+######SparkSubmit调用关系
+SparkSubmit -> SparkDeploySchedulerBackend -> AppClient(专门用于与Master交互) -> tryRegisterAllMasters
+
+######Application分发原则
+Worker分发Application有两种原则:
+
+ - 尽可能将任务分发到各个Worker Node  
+实现方式：每次在各个Worker Node上分配一个空闲的Core，然后分配Application
+ - 将任务分发到尽可能少的Worker Node
+实现方式：一次在某个节点上占用尽可能多的空闲Core，然后再分配Application
+
+如果不加限定，一个Application可以占用集群的Core数目为Integer.MAX_VALUE，因此最好加以限定。使用`spark.cores.max`指定每个Application占用的最大CPU Core数目。
+
+######Application运行结束判断
+######Executor应对
+Application Driver退出时，*CoarseGrainedExecutorBacked*会收到系统通知DisassociatedEvent，Executor会认为Application Driver已经退出，然后主动退出程序执行。
+
+######Master应对
+Master也会收到DisassociatedEvent，然后将注册上来的Application删除。
+
+
+在Standalone Cluster模式下，Executor的启动参数受控于Driver机器上的SPARK_HOME/conf/spark-defaults.conf文件配置。  
+而如果在Driver机的配置文件中，spark.executor.memory指定的比实际分配到的Worker上的可用内存大，则无法为提交的Application创建任务Executor。
+
+#####Standalone模式下Cluster启动流程
+ 1. 启动Master，Master启动完毕后会等待新的的Application提交上来
+ 2. 启动Worker，启动后向Master发起注册，注册成功后定期向Master发送心跳
+ 3. 如果有新的Application提交给Master，Master会根据资源使用情况要求Worker启动相应的Executor
+ 4. 新启动的Executor注册到Applciation中的Driver，定期发送心跳消息
+ 5. Application中的SchedulerBackend将作业中的Task分配到各个注册上来的Executor上执行
+
+#####容错性
+ 1. Worker异常退出
+  - Worker在退出前，会通过预先设定的shutdownHook将Worker下的所有Executor关闭
+  - Master在发现Worker的心跳超时，认为Worker节点已阵亡，将这个消息报告给相应Driver，消息中还包括失联Worker下的Executor信息，通知Application Driver相应的Executor已失联。另外一种保障是，Executor在关闭后，Application Driver与Executor的连接无法继续，Application Driver会收到DisassociatedEvent，表明Executor已失联。
+
+ 2. Executor异常退出
+  - ExecutorRunner会发现异常，然后通过ExecutorStatusChanged汇报给Master
+  - Master收到通知后，向Worker发送重新启懂Executor的指令
+  - Worker收到LaunchExecutor指令，重启Executor
+
+ 3. Master异常退出
+  - 下属Worker的Executor无法在出错之后重启
+  - 即使任务结束，所占用的资源也无法释放，因为释放资源的指令由Master发出
+  - 如果Client只有一个Master，则此时Job失败
+  - 解决办法：部署备用Master节点
+使用ZooKeeper管理，当Active Master异常退出时，启动StandBy的Master节点
+
+![主备双Master部署模式](https://github.com/cowardfxn/notes/blob/master/img/zooKeeperModel.png)
+
+######ZooKeeper配置
+在conf/spark-env.sh中，为SPARK\_DAEMON\_JAVA\_OPTS添加如下项目
+
+配置项 | 说明
+:------|:-----
+spark.deploy.recoveryMode | 是否支持ZooKeeper备机方案，默认值为NONE
+spark.deploy.zookeeper.url | ZooKeeper集群的URL地址(ip1:port1, ip2:port2, ...)
+spark.deploy.zookeeper.dir | ZooKeeper存储reocovery state的目录
+
+SPARK\_DAEMON\_JAVA\_OPTS配置实例：
+`SPARK_DAEMON_JAVA_OPTS="SPARK_DAEMON_JAVA_OPTS -Dspark.deploy.recoveryMode=ZOOKEEPER"`
+
+ZooKeeper模式运行命令实例：
+`MASTER=spark://ip1:port1,spark://ip2:port2,spark://ip3:port3 spark-shell`
+
+####SparkOn YARN
+YARN由三大功能模块组成：
+
+ - RM ResourceManager
+ - NM NodeManager
+ - AM ApplicationMaster
+
+#####YARN作业提交流程
+ 概述：用户通过Client向ResourceManager提交Application，ResourceManager根据用户请求分配合适的Container，然后在指定的NodeManager上运行Container以启动ApplicationMaster。  
+
+详细：  
+
+ 1. ApplicationMaster启动后需要先向ResourceManager注册自己
+ 2. 对于用户的Task，ApplicationManager需要先与ResourceManager协商以获取运行Task所需的Container，然后，ApplicationMaster将任务发送给指定的NodeManager
+ 3. NodeManager启动相应的Container，运行用户的Task
+
+![部署YARN应用的流程](https://github.com/cowardfxn/notes/blob/master/img/yarnWorkFlow.png)
+
+编写YARN Application时，主要实现的是Client和ApplicationMaster。
+
+
+#####Standalone vs. YARN
+Standalone | YARN
+:---------- | :-------
+Client | Client
+Master | ApplicationMaster
+Wroker | ExecutorRunnable
+Scheduler | YarnClusterScheduler
+SchedulerBackend | YarnClusterSchedulerBackend
+Executor 由Wroker启动/重启 | Executor 由NodeManager启动/重启
+
+#####各模块启动顺序
+ 1. ApplicationMaster作为应用入口最先启动
+ 2. 向RM申请Container
+ 3. 申请成功后向NM发送启动Container指令
+ 4. 在ApplicationMaster中启动监听线程，监控ExecutorContainer运行
+**如果失效的Container数目没有超过最大阈值，则重启失效的Container，否则判断整个应用执行失败，退出。**
+
+####安装Hadoop
+ 1. 创建用户组和用户  
+
+    ```
+    groupadd hadoop
+    useradd -b /home -m -g hadoop hduser
+    ```
+
+ 2. 切换hadoop用户，下载并解压Hadoop运行版
+ 3. 设置环境变量
+
+    ```
+    export HADOOP_HOME=$HOME/hadoop-2.4.0
+    export HADOOP_MAPRED_HOME=$HOME/hadoop-2.4.0
+    export HADOOP_COMMON_HOME=$HOME/hadoop-2.4.0
+    export HADOOP_HDFS_HOME=$HOME/hadoop-2.4.0
+    export HADOOP_YARN_HOME=$HOME/hadoop-2.4.0
+    export HADOOP_CONF_DIR=$HOME/hadoop-2.4.0/etc/hadoop
+    ```
+ 4. 创建HDFS相关目录，namenode和datanode等
+
+    ```
+    mkdir -p $HOME/yarn_data/hdfs/namenode
+    mkdir -p $HOME/yarn_data/hdfs/datanode
+    ```
+ 5. 修改Hadoop配置文件
+  * `$HADOOP_HOME/etc/hadoop/yarn-site.xml`
+  
+        ```
+        修改原configuration标签
+        <configuration>
+        <property>
+            <name>yarn.nodemanager.aux-services</name>
+            <value>mapreduce_shuffle</value>
+        </property>
+        <property>
+            <name>yarn.nodemanager.aux-services.mapreduce.shuffle.class</name>
+            <value>org.apache.hadoop.mapred.ShuffuleHandler</value>
+        </property>
+    </configuration>
+        ```
+        
+  * `$HADOOP_HOME/etc/hadoop/core-site.xml`
+      
+      ```
+      <property>
+        <name>fs.default.name</name>
+        <value>hdfs://localhost:9000</value>
+        <!-- YarnClient会用到该配置项 -->
+      </property>
+      ```
+  * `$HADOOP_HOME/etc/hadoop/hdfs-site.xml`
+  
+      ```
+      <property>
+          <name>dfs.replication</name>
+          <value>1</value>
+      </property>
+      <property>
+          <name>dfs.namenode.name.dir</name>
+          <value>file:/home/hduser/yarn_data/hdfs/namenode</value>
+          <!-- 节点格式化中用到 -->
+      </property>
+      <property>
+          <name>dfs.datanode.data.dir</name>
+          <value>file:/home/hduser/yarn_data/hdfs/datanode</value>
+      </property>
+
+      ```
+  
+  * `$HADOOP_HOME/etc/hadoop/mapred-site.xml`
+  
+      ```
+      <property>
+          <name>mapreduce.framework.name</name>
+          <value>yarn</value>
+      </property>
+      ```
+
+ 6. 格式化namenode
+ 
+  ```
+  bin/hadoop namenode -format
+  ```
+  
+ 7. 启动namenode
+ 
+ ```
+ sbin/hadoop-daemon.sh start namenode
+ ```
+ 
+ 8. 启动datanode
+
+ ```
+ sbin/hadoop-daemon.sh start datanode
+ ```
+ 
+ 9. 启动ResourceManager(RM)
+ 
+ ```
+ sbin/yarn-daemon.sh start resourcemanager
+ ```
+ 
+ 10. 启动NodeManager(NM)
+ 
+ ```
+ sbin/yarn-daemon.sh start nodemanager
+ ```
+ 
+ 11. 启动Job History Server
+ 
+ ```
+ sbin/mr-jobhistory-daemon.sh start historyserver
+ ```
+
+###Spark Streaming
