@@ -605,3 +605,147 @@ Executor 由Wroker启动/重启 | Executor 由NodeManager启动/重启
  ```
 
 ###Spark Streaming
+
+```
+org.apache.spark.streaming._
+org.apache.spark.streaming.StreamingContext
+```
+
+######实时数据流
+ - 数据一直处在变化中
+ - 数据无法回退
+ - 数据一直源源不断地涌进
+
+####DStream
+Discretized Stream，Spark Streaming处理实时数据流的基本数据结构。  
+
+Spark Streaming处理实时数据流的处理思路：
+
+ 1. **数据持久化** 先将网络上接收的数据保存起来，以备后续处理出错时恢复用
+ 2. **离散化** 按时间分片划分数据流，一段时间内的数据为一个处理单元
+ 3. **分片处理** 分批处理经过离散划分的数据
+
+![DStream与RDD的对应关系](https://github.com/cowardfxn/notes/blob/master/img/rdd2dstm.png)
+
+DStream由各个时间片数据的RDD组成，在API角度，DStream对RDD进行了一层封装，大部分的RDD operation都有对应的DStream方法定义。  
+
+类似RDD的Transformation和Action，DStream上的Operation也分为两类：
+
+ - Transformation 转换操作
+ - Output 输出结果，如print, saveAsObjectFiles, saveAsTextFiles, saveAsHadoopFiles
+
+
+Spark Streaming主要由三个模块构成：
+
+ - Master 记录DStream间的依赖关系，并负责任务调度以生成新的RDD
+ - Worker 从网络接收数据，存储并执行RDD计算
+ - Client 负责向Spark Streaming中灌入数据(Consumer?)
+
+####编程接口
+用户对DStream的操作通过StreamingContext完成  
+在指定DStream间的转换关系后，通过StreamingContext.start函数来真正启动运行。
+
+####Spark Streaming执行过程
+Spark Streaming内部实现的分析步骤：
+
+ 1. 主要部件的初始化过程
+ 2. 网络侧接收到的数据如何存储到内存
+ 3. 如何根据存储下来的数据生成相应的Spark Job
+
+#####初始化过程
+StreamingContext最主要的入参是以下三个：
+
+ 1. SparkContext 任务最终通过SparkContext接口提交到Spark Cluster运行
+ 2. Checkpoint 检查点，缓存中间结果用
+ 3. Duration 根据多少时长创建一个batch(使用获取的数据进行定义好的运算)
+
+
+而StreamingContext最主要的成员变量作用如下：
+
+ - **JobScheduler** 用于定期生成SparkJob
+ - **DStreamGraph** 包含DStream间依赖关系的容器
+ - **StreamingTab** 用以Spark Streaming运行作业的监控
+
+Streaming作业的提交和执行过程如图：  
+![Streaming作业的提交和执行过程](https://github.com/cowardfxn/notes/blob/master/img/jobRun.png)
+
+#####数据接收
+ssc.start被执行之后，会调用JobScheduler.start函数，由JobScheduler一次启动三个功能模块：**监控模块**，**数据接收模块**，**启动定期生成Spark Job的JobGenerator**
+
+接收数据的Receiver运行在Worker机器上的Executor的JVM进程中，而非Driver Application的JVM内。
+
+#####数据处理
+DStreamGraph记录输入的DStream和输出的DStream。  
+其中，InputDStream用来解决启动接收数据函数的问题，OutputDStream则用于生成Spark Job。
+
+OutputDStreams中的元素是在有Output类型的Operation(print、saveAsObjectFile等)作用于DStream上时自动添加到DStreamGraph中的，与InputDStream的一个重要区别就是OutputDStream会重载generateJob。  
+而从代码实现层面来说，InputDStream属于控制层面(Control Panel)，OutputDStream属于数据层面(Data Panel)
+
+Streaming数据接收的控制层面流程大致如图：  
+![控制层面流程](https://github.com/cowardfxn/notes/blob/master/img/controlPanel.png)
+
+ 1. 数据真正接收是发生在SocketReceiver.receive中，将接收到的数据放入BlockGenerator.currentBuffer
+ 2. BlockGenerator中有一个重复定时器updateCurrentBuffer，updateCurrentBuffer将当前buffer中的数据封装为一个新的Block，放入blocksForPush队列
+ 3. BlockGenerator.BlockPushingThread会不停的将blocksForPush队列中的成员通过pushArrayBuffer函数传递给BlockManager，让BlockManager将数据存储到MemoryStore中
+ 4. pushArrayBuffer还会将已被BlockManager存储的Block的id传递给ReceiverTracker，ReceiverTracker会将存储的blockId放到对应的StreamId队列中
+
+
+接收到的数据转换为Block的过程
+
+ 1. 首先new message被放入blockManager.currentBuffer
+ 2. 定时器超时处理过程。将整个currentBuffer中的数据打包成一条BlockManager，放入ArrayBlockingQueue，支持FIFO
+ 3. keepPushingBlocks将每一条Block(包含时间戳和接收到的原始数据)让BlockManager进行保存，同时通知ReceiverTracker已经将哪些Block存储到了BlockManager中
+ 4. ReceiverTracker将每一个Stream接收到但还没有进行处理的Block放入receivedBlockInfo，使用的数据结构是Hashmap。在后面的generateJobs中会从receivedBlockInfo中提取数据以生成相应的RDD
+
+总结：
+ - 用time作为关键字，取出在当前时间之前加入的所有blockIds
+ - 真正提交运行的时候，RDD中的blockfetcher以blockId为关键字，从BlockManagerMaster获取接收的原始数据
+
+最终Job执行时，生成的Task数目与对应的Duration中获得的输入，生成的Block数目相当。
+
+####窗口操作
+Streaming的window操作都需要两个必要的参数：窗口的长度和窗口滑动的间隔，两者都必须是初始化ssc时定义的Duration的整数倍  
+窗口的长度定义了在触发Job时单个切片的长度，也可以说是Block的数目  
+窗口滑动间隔则是在Duration的基础上，定义了窗口的"*Duration*"
+
+####容错性分析
+
+ - Master节点挂掉 Master重启后，会再次主动创建Receiver，将Receiver派发到某一Executor上，但是在重启之前时间传递的数据，由于未读入系统，则会丢失
+ - Worker挂掉
+  * 如果Worker节点上运行了Receiver，则可能丢失数据
+  * 如果Worker节点上未运行Receiver，则无影响
+ - Driver挂掉 重启之后会通过Checkpoint Data恢复退出前的场景，数据不会丢失
+
+如果最终结果的保存方式存在被重复写入的可能，那么无法保证结果数据是否被重复计算，不能达到exactly-once的效果。
+
+####Storm
+
+Storm的主要节点：
+
+ - Client 提交应用，类似Spark的SparkSubmit
+ - Nimbus Master节点，兼具Spark中Driver和Master的功能
+ - Supervisor 监控Worker进程，类似Spark中的Worker
+ - Executor 具体运行各个任务的线程，类似Spark中的TaskRunner
+
+Strorm依靠ZooKeeper来维护整个集群，集群间的消息传递使用ZeroMQ，0.90版之后使用Netty作为进程间通信组件。
+
+####Storm vs. Spark Streaming
+
+特征 | Storm | Spark Streaming
+:------ | :------ | :-------
+处理模型 | record-at-a-time | 批量处理
+消息获取模式 | push | pull
+延迟 | Sub-second | few second
+吞吐量 | 低 | 高
+exactly-once | 通过Trident Topology支持 | 支持
+Cluster Rebalance | 支持 | 不支持
+集群管理 | ZooKeeper | Akka
+实现语言 | Clojure | Scala
+API支持的语言 | Clojure, java | Scala, Java, Python
+并发数动态可调 | 支持 | 不支持
+社区活跃程度 | 活跃 | 活跃
+大公司支持 | Hortonwork | Cloudera
+
+总结：**在实时性上Storm更优一些，Spark则在吞吐量上更胜一筹**。
+
+###Spark SQL
