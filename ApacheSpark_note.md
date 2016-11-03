@@ -806,7 +806,7 @@ Hive的整体架构可以分为以下几大部分：
 ####Hive On Spark
 HiveQL需要MapReduce过程，运行时间过长。解决办法是在HiveQL的Optimizer阶段，不生成MapReduce任务，而是生成Spark Job，使用Spark来真正执行。
 
-SparkSQL与HiveQL执行过程对比
+SparkSQL与HiveQL执行过程对比  
 ![sqlVsHql](https://github.com/cowardfxn/notes/blob/master/img/sqlVsHql.png)
 
 通过对比可以发现，源码分析时的关键点在于：
