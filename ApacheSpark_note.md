@@ -749,3 +749,79 @@ API支持的语言 | Clojure, java | Scala, Java, Python
 总结：**在实时性上Storm更优一些，Spark则在吞吐量上更胜一筹**。
 
 ###Spark SQL
+通用的SQL三大模块，parser、optimizer和executor。  
+
+最早的Spark平台上的SQL接口是Shark，但在功能被并入SparkSQL后，Shark被停用。  
+
+####SqlParser
+整个SQL部分代码大致分类如图所示
+![SQLOnSpark](https://github.com/cowardfxn/notes/blob/master/img/sqlOnSpark.png)
+
+处理顺序如下：
+
+ 1. SqlParser生成LogicalPlan Tree
+ 2. Analyzer和Optimizer将各种Rule作用于LogicalPlan Tree
+ 3. 最终优化生成的LogicalPlan生成SparkRDD
+ 4. 将生成的RDD交由Spark执行
+
+一般来说，Spark每支持一种应用开发，都会引入一个新的Context及相应的RDD，对于SQL来说，引入的就是SQLContext和SchemaRDD。  
+
+第一步，parseSql(sqlText)负责生成LogicalPlan，负责解析SQL语句，从SQL语句文本生成对应的Unresolved LogicalPlan。  
+然后通过Analyzer将Unresolved LogicalPlan转换为Resolved LogicalPlan。实际上，第一步的作用就是找到Analyzer的触发点。
+
+####Optimizer
+对Analyzer生成的LogicalPlan进行优化，逻辑类似LogicalPlan
+
+####SparkPlan
+使用经过Optimizer优化后的LogicalPlan生成SparkRDD
+
+> SparkSQL支持使用Parquet文件和JSON文件作为数据源，也支持将SchemaRDD中的内容保存为Parquet文件。
+
+####Hive
+由Facebook出品，最初是被用于帮助熟悉SQL的数据分析师使用HDFS数据。
+
+#####架构
+ - Table 表，类似SQL数据库中的表，每个表都有一个对应的HDFS目录，表中的数据经过序列化后存在该目录中。Hive也支持将数据存在NFS或本地文件系统中。
+ - Partition 分区，类似RDBMS中的索引功能，每个Partition都有一个对应的目录，在查询时有助于减少数据规模。
+ - Bucket 桶，数据分区之后，每个分区仍可能有相当大的数据量，这是，按照关键字的Hash结果将数据分成多个Bucket，每个Bucket对应于一个文件。
+
+Hive支持类似SQL的查询语言，HiveQL，有DDL(Data Definition Language)、DML(Data Manipulation Language)、UDF(User Define Function)等三种类型。
+
+Hive的整体架构可以分为以下几大部分：
+
+ - 用户接口支持CLI、JDBC和WebUI
+ - Driver 负责将用户指令转化为相应的MapReduce Job
+ - MetaStore 元数据存储仓库，默认使用Derby存储引擎。数据库和表定义等内容就属于元数据。
+
+![Hive架构](https://github.com/cowardfxn/notes/blob/master/img/hiveStructure.png)
+
+#####HiveQL On MapReduce执行过程
+ 1. Parser 将HiveQL转化为相应的语法树
+ 2. Semantic Analyser 语义分析
+ 3. LogicalPlan Generating 生成相应的LogicalPlan
+ 4. QueryPlan Generating 生成QueryPlan
+ 5. Optimizer 查询优化器
+ 6. 生成MapReduce Job，提交给Hadoop运算框架执行
+
+####Hive On Spark
+HiveQL需要MapReduce过程，运行时间过长。解决办法是在HiveQL的Optimizer阶段，不生成MapReduce任务，而是生成Spark Job，使用Spark来真正执行。
+
+SparkSQL与HiveQL执行过程对比
+![sqlVsHql](https://github.com/cowardfxn/notes/blob/master/img/sqlVsHql.png)
+
+通过对比可以发现，源码分析时的关键点在于：
+
+ - Entrypoint HiveContext.scala
+ - QueryExecution HiveContext.scala
+  * parser HiveQL.scala
+  * optimizer
+
+而HiveQL的转化过程中，使用到的数据包括：
+
+ - **Schema Data** 元数据，数据库等一和表结构等，存储于MetaStore中
+ - **Raw Data** 要分析的文件本身，输入数据
+
+####Hive On Spark环境搭建
+需要搭建Hadoop集群，也就是常用的Spark on Hadoop集群的部署方式。
+
+###GraphX
