@@ -919,3 +919,97 @@ GraphX提供了几类方法来构建图结构数据：
  - Graph.fromEdgeTuples 由通过顶点ID标示的边来构建图，rawEdges参数的类型是RDD[(VertexId, VertexId)]，与上面直接传入Edge对象的方法不同
 
 #####图数据存储与分割
+GraphX采用的图分割策略是顶点分割，把图中的边尽可能均匀的分散在各个节点，而允许顶点跨节点存在，减少通信和存储代价  
+具体的边分割策略由PartitionStrategy决定，也可通过Graph.partitionBy接口指定，默认的是基于边初始的划分方法进行分割的。
+
+GraphX中目前有以下几种分割策略：
+
+ - EdgePartitionID 根据源的VertexID和partitionID进行随机分配，具有相同源顶点的边会被划分到同一节点  
+具体的分配算法为：
+
+    ```
+    val mixingPrime: VertexId = 1125899906842597L
+    (math.abs(src) * mixingPrime).toInt % numParts
+    ```
+mixingPrime主要用来增加分配过程的随机性和均匀性
+ - EdgePartition2D 能够将边划分至N个节点，保证顶点的复制份数小于$$2^{sqrt(numParts)}$$，同时尽可能保证边分布的均匀性，从而保证计算负载的均衡  
+主要分割策略如下：
+
+    1. 获取分配矩阵的平方因子
+        
+        ```
+        val ceilSqrtNumParts: PartitionID = math.ceil(math.sqrt(numParts)).toInt
+        ```
+        ceilSqrtNumParts是2的整数次幂，保证在对源顶点和目标顶点随机化的过程中，其分配的复制份数不会超过$$2^{sqrt(numParts)}$$
+    2. 将源顶点和目标顶点的ID随机化  
+    通过引入一个mixingPrime常量，增加对col和row分配的随机性和均匀性
+    
+        ```
+        val mixingPrimeL VertexId = 1125899906842597L
+        val col: PartitionID = (math.abs(src * mixingPrime) % cellSqrtNumParts).toInt
+        val row: PartitionID = (math.abs(dst * mixingPrime) % cellSqrtNumParts).toInt
+        ```
+    3. 均匀分配至numParts个数据块
+    
+        ```
+        (col * ceilSqrtNumParts) % numParts
+        ```
+ - RandomVertexCut 根据源顶点和目标顶点构成的边进行Hash编码，在对分割数numParts进行取余运算  
+
+    ```
+    math.abs((src, dst).hashCode()) % numParts    
+    ```
+    > 疑代码未贴全，最后的“ % numParts”为自补
+ - CanonicalRandomVertexCut 与RandomVertexCut类似，只是在hash编码前进行顶点值排序，将源顶点和目标顶点中，ID小的排在前，大的排在后。然后将升序构成的边对分割数numParts进行取余运算，得到相应的Partition
+
+    ```
+    val lower = math.min(src, dst)
+    val higher = math.max(src, dst)
+    math.abs((lower, higher).hashCode()) % numParts
+    ```
+    
+#####操作接口
+GraphX中的属性图graph也有一些基本操作的API接口，如属性变化、结构操作、连接操作、邻接操作、缓存操作等。
+
+ - **属性变换** 通过map对graph的顶点和边进行属性变换操作，产生变换后的新图，接口有*mapVertices*、*mapEdges*、*mapTriplets*
+ - **结构操作** 对图的顶点和边进行过滤，接口包括:
+  * *reverse* 对图中所有的有向边进行翻转操作，不改变顶点和边的所有属性。可以用来进行反向PageRank计算
+  * *subgraph* 对graph进行信息过滤和提取，返回满足指定条件的子图，类似RDD中的filter方法
+  * *mask* b.mask(a) 将a、b两图进行对比，返回与a具有相同顶点和边的子图
+  * *groupEdges* 对边进行和并操作，合并重复边或对两条边上的权值进行合并计算等
+ - **连接操作** 类似数据库中的连接操作，通过关联属性获得其他有用的属性信息，常用接口包括两类：
+  * *joinVertices* 利用外部数据与原有数据进行合并，类似逻辑与运算
+  * *outerJoinVertices* 理由外部数据源更新当前顶点的属性，是对已有属性的替换
+
+######Pregel源码实现
+Pregel的定义文件是Pregel.scala，入口函数是apply。
+
+#####PageRank
+计算网页链接价值的算法，属于Google专有的。
+
+######核心思想
+ 1. 网页之间的关系用连接图表示
+ 2. 两个网页之间的连接关系表示任意用户从一个网页找到另一个的概率
+ 3. 所有网页的排名最后保存在一个一维向量中
+
+所有网页之间的连接关系用矩阵A表示(这将是一个非常庞大的矩阵)，所有网页的排名用矩阵B表示(一维矩阵)  
+$$B_{i} = A \times B_{i-1}$$
+> $$B_{i}$$ 当前迭代  
+> $$B_{i-1}$$ 前次迭代  
+> 初始认为所有网页排名都是$$\frac{1}{N}$$，即$$B_{0}=(\frac{1}{N}, \frac{1}{N}, ..., \frac{1}{N})$$，以此为初始条件开始迭代。当两次迭代的差异非常小，接近于0时，迭代结束
+
+相比整个网络中网页数量之和，网页之间的连接数量非常小，计算单个网页的排名时需要对0或者非常小的概率进行平滑处理，利用一个非常小的常数$$\alpha$$，上述公式演化为：  
+$$B_{i} = \left [ \frac{\alpha}{N} \cdot I + \left (1 - \alpha \right )A \right ] \cdot B_{i-1}$$
+
+
+要实现PageRank算法，在Pregel的接口中，需要用户自定义的函数有三个：
+
+ - vertexProgram
+ - sendMessage
+ - messageCombiner
+
+参考代码*PageRank.run*。似乎GraphX有相关的示例代码。
+
+###MLLib
+机器学习
+
