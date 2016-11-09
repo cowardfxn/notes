@@ -1013,3 +1013,150 @@ $$B_{i} = \left [ \frac{\alpha}{N} \cdot I + \left (1 - \alpha \right )A \right 
 ###MLLib
 机器学习
 
+####线性回归(Linear Regression)
+######线性回归模型  
+$$Y = X\beta + \epsilon$$
+
+$$Y$$是一个包括了观测值$$Y_{1}, ..., Y_{i}$$的列向量，$$\epsilon$$是包括了未观测的随机向量$$\epsilon_{1}, ..., \epsilon_{n}$$(误差)  
+$$X=\begin{pmatrix}
+1 & x_{11} & {...} &x_{1p} \\ 
+1 & x_{21} & {...} &x_{2p} \\ 
+{...}  & {...} & {...} &{...} \\ 
+1 & x_{n1} & {...} & x_{np}
+\end{pmatrix}$$
+
+######参数求解
+最小二乘法 计算最小误差的平方和(方差?)  
+过程是计算对每个样本的x的最小误差$$\mu(x)=\mu(x_{i};\alpha_{1}, \alpha_{2}, ..., \alpha_{k})$$，然后对结果求和：  
+$$S= \sum_{i=1}^n[y_{i} - \mu(x)=\mu(x_{i};\alpha_{1}, \alpha_{2}, ..., \alpha_{k})]^2$$
+
+再求得使以上方程的值$$S$$最小的$$\alpha_{1}, \alpha_{2}, ..., \alpha_{k}$$
+
+#####梯度下降法(Gradient descent)
+原理：如果实值函数$$F(X)$$在点a出可微且有定义，那么函数$$F(X)$$在a点沿着梯度相反的方向$$-{\Delta}F(a)$$移动时，下降最快，最终将达到一个X的最优解，使改点的梯度等于0，让X值无论如何移动，$$F(X)$$的值都在一个确定的范围内，而不会超出。
+
+缺点：可能只找到局部最优解，无法区分局部最优解与全局最优解
+
+######算法实现
+对于输入样本集$$x^{(i)}, y^{(i)}$$，i=0, 1, ..., m(即m个样本)，其中$$x^{i}=[x_0^i, x_1^i, ..., x_n^i]^T$$(即n个特征)  
+拟合(预测)函数为:  
+$$h(x)=\sum_{i=0}^n\theta_iX_i=\theta^Tx$$
+
+目标函数(误差和函数)为：  
+$$J(\theta)=\frac{1}{2}\sum_{i=1}^m(h_{\theta}(x^{(i)})-y^{(i)})^2$$
+
+需要做的就是找出一组$$\theta=[\theta_0, ..., \theta_n]^T$$，使$$J(\theta)$$最小
+
+计算过程：
+
+ - 随机选取参数向量$$\theta$$的初始值
+ - 更新每个参数$$\theta_j（j\in[0, n]]）$$的值：  
+    $$\theta_j := \theta_j - {\alpha}\frac{\partial}{\partial\theta_j}J(\theta)$$  
+将$$J(\theta)$$代入上式，则有：  
+$$\theta_j := \theta_j + {\alpha}\sum_{i=1}^m(y^{(i)}-h_{\theta}(x^{(i)}))x_{i}^{(i)}$$ (for every j)  
+
+    * 由于该算法每次更新一个$$\theta$$中的元素，而且需要处理整个样本集合，因此也被称作**批量梯度下降(batch gradient descent)**  
+    * 将计算得到的新的$$\theta$$更新后代入$$J(\theta)$$，直到$$J(\theta)$$的值收敛于某一范围后，结束迭代
+
+特点：
+
+ - 可能会收敛于局部最小值
+ - 靠近极小值范围时，每次迭代的进展会变的很小，优化速度回变慢
+ - 每次更新都需要处理整个样本集，对于大量数据来说，计算速度较慢
+
+#####随机梯度下降(Stochastic graident descent)
+与梯度下降算法基本类似，只是在更新参数向量$$\theta$$时，每次只更新其中一个参数。  
+更新$$\theta_j$$的表达式如下：  
+$$\theta_j := \theta_j + {\alpha}(y^{(i)} - h^{\theta}(x^{(i)}))x_{j}^{(i)}$$
+
+#####数据正则化
+使用简单的线性回归处理复杂数据时，会有些问题
+
+ - 稳定性与可靠性 样本数据集合是奇异的，无法求得逆矩阵；样本集合数据量与特征数目相当(也可理解为样本数据太少而特征数目太多)，容易产生过拟合
+ - 模型解释能力的问题 某些特征有内在联系，可能会影响线性回归计算结果
+
+解决方法：
+
+ - 子集选择 使用样本数据集的子集进行计算，包括逐步回归和最优子集法等
+ - 收缩方法 设定某些特征对应的参数向量为0，去除他们对计算结果的影响。又称正则化(regularization)，主要是岭回归(ridge regression)和lasso回归
+ - 维数缩减 主成分回归(PCR)和偏最小回归(PLS)的方法。把p个特征投影到m维空间(p < m)，利用投影得到的不相关数据建立线性模型
+
+#####代码实现
+`org.apache.spark.mllib.regression.LinearRegressionWithSGD`  
+调用过程：  
+LinearRegressionWithSGD.train -> LinearRegressionWithSGD.train -> optimizer.optimize -> GradientDescent.runMiniBatchSGD
+
+> 疑似印刷有误，待更正
+
+计算过程中使用了Breeze库，Breeze、Epic及Puck是scalanlp的三大支柱性项目，参考 [scalanlp](www.scalanlp.org)
+
+####分类算法
+#####逻辑回归(Logical Regression)
+适用于二值分类问题，即结果非彼即此的分类
+
+假设函数(hypothesis):  
+$$h_{\theta}(x) = g(\theta^{T}x) = \frac{1}{1 + e^{-\theta^{T}x}}$$
+
+分类结果必须满足伯努利分布：  
+$$P(y=1|x;\theta) = h_{\theta}(x)$$  
+
+$$P(y=0|x;\theta) = 1 - h_{\theta}(x)$$  
+
+损失函数(cost function)采用对数损失函数或对数似然损失函数：  
+$$L(Y, P(Y|X)) = - \log{P(Y|X)}$$
+
+$$L(h_{\theta}(x), y) = \begin{Bmatrix}
+y=1; -\log(h_{\theta}(x)) \\ 
+y=0;-\log(1-h_{\theta}(x^{(i)}))
+\end{Bmatrix}$$
+
+$$J(\theta) = \frac{1}{m}[\sum_{i=1}^m y^i \log h_{\theta}(x^{(i)}) + (i-y^{i})\log(1-h_{\theta}(x^{(i)}))]$$
+
+对cost function求各个$$\theta$$的偏导数，可以得到类似线性回归时的梯度公式：  
+$$\frac{\partial }{\partial \theta_i} = \frac{1}{m}\sum_{i=1}^m L(h_{\theta}(x^{(i)} - y^{(i)}))x^{(i)}$$
+
+可以发现与线性回归的迭代求解公式在形式上完全相同。  
+线性回归与逻辑回归二者的区别主要是在假设函数上。
+
+算法 | 假设函数(Hypothesis)
+:---- | :--------
+线性回归 | $$y^i = \theta^T x^i + \epsilon^i$$
+逻辑回归 | $$h_{\theta}(x) = g(\theta^{T}x) = \frac{1}{1 + e^{-\theta^{T}x}}$$
+
+######代码实现
+LogisticGradient
+
+#####支持向量机(SVM)
+原理复杂，不在此详述  
+代码入口: HingeGradient
+
+####拟牛顿法
+基本思想是在极小值点附近，通过对目标函数做二阶泰勒展开，得到极小点的下一个估计值。  
+
+设$$x_k$$为当前的极小点估计值，则$$x_k$$附近的二阶泰勒展开式就是:  
+$$\varphi (x) = f(x_k) + {f}'(x_k)(x - x_k) + \frac{1}{2}{f}''(x_k)(x - x_k)^2$$
+
+若该点为极值点，则应满足的条件是$$\varphi ' (x) = 0$$,即:  
+$$f'(x_k) + f''(x_k)(x - x_k) = 0$$
+
+可求得  
+$$x = x_k - \frac{f'(x_k)}{f''(x_k)}$$
+
+如果给定初始值$$x_0$$，则可构造出如下的迭代公式:
+
+$$x_{k+1} = x_k + \frac{f'(x_k)}{f''(x_k)}, k = 0, 1, ...$$
+
+以此$$x_k$$进行迭代，在一定条件下可以使$$f(x)$$收敛到极小值
+
+经典牛顿法对于目标函数是二次函数或者类似二次函数的情况，处理效率较好，但是如果样本数据复杂，目标函数与二次函数相差较大，则无法进行处理。  
+
+对此提出了拟牛顿法，在“拟牛顿”条件下优化目标函数。具体原理由于本章未详述，不再记录。
+
+#####BFGS算法
+拟牛顿法的实现
+
+#####L-BFGS算法
+只存储计算过程中的向量序列，防止因中间矩阵过大降低计算效率
+
+#####代码实现
+LBFGS.optimize -> LBFGS.runLBFGS -> BreezeLBFGS.iterations -> CachedDiffFunction -> LBFGS.CostFun
