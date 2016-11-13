@@ -266,7 +266,7 @@ Shuffle_id唯一标识一个Job中的Stage，需要遍历该Stage中的所有Tas
  - BlockManagerMaster 只允许在Driver Application所在的Executor，记录BlockId存储在哪个SlaveWorker上，提供路由功能
 
 #####数据写入过程
-![数据写入内存过程](https://github.com/cowardfxn/notes/blob/master/img/memoryCache.jpg)
+![数据写入内存过程](https://github.com/cowardfxn/notes/blob/master/img/memoryCache.png)
 
  1. RDD.iterator是与Storage子系统交互的入口
  2. CacheManager.getOrCompute调用BlockManager的put接口来写入数据
