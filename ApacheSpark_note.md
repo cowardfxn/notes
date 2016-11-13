@@ -822,7 +822,8 @@ SparkSQL与HiveQL执行过程对比
  - **Raw Data** 要分析的文件本身，输入数据
 
 ####Hive On Spark环境搭建
-需要搭建Hadoop集群，也就是常用的Spark on Hadoop集群的部署方式。
+需要搭建Hadoop集群，也就是常用的Spark on Hadoop集群的部署方式。  
+[Hive On Spark环境搭建](https://github.com/cowardfxn/notes/blob/master/hiveOnSpark.md)
 
 ###GraphX
 对网络结构的抽象，通常表示为G = (V, E)，由顶点集合V和边集合E构成的一种数据结构，用来描述网络内各个实体的特征和关联关系。  
