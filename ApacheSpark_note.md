@@ -370,7 +370,7 @@ Worker启动后会向Master发起注册，注册消息中包含本Worker Node的
 同时Master上也会启动一个定时器，定期对原本处于Alive状态的Worker进行状态判断，如果Worker最近一次更新状态的时间到当前时间的差值大于定时器时长，则认为该Worker没有发送心跳消息，不再存活。
 实装逻辑里，Master上还会设定REAPER\_ITERATIONS，更新状态时间的差值大于多个定时器时长后，才会认为Worker不再存活。
 
-**如果判定Worker已不再存货，则使用removeWorker函数通知DriverApplication**
+**如果判定Worker已不再存活，则使用removeWorker函数通知DriverApplication**
 
 Spark提供的启动Worker节点的脚本:  
 `SPARK_HOME/sbin/start-slaves.sh`  
