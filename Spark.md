@@ -185,7 +185,7 @@ FilteredRDD | 与父RDD一致 | 与父RDD一对一 | 计算父RDD的每个分区
 JoinedRDD | 每个reduce任务一个分区 | 所有父RDD | 读取shuffle数据并计算 | 无 | HaspPartitioner(partitions: Int)
 
 ###DAG Scheduler
- - 基于Stage构建DAG，决定每个任务的最佳位置
+ - 基于Stage构建DAG，决定每个任务的最佳位置(以stage当前状态而言的最佳)
  - 记录哪个RDD或者Stage输出被物化(materialize)
  - 将taskset传给底层调度器TaskScheduler
  - 决定运行任务的最优位置

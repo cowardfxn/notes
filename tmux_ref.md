@@ -224,11 +224,11 @@ set -g status-justify centre
 set -g status-bg colour235
 set -g status-fg colour248
 set -g status-attr dim
-#[default]» #[fg=colour187]#S #[default]• #[fg=colour187]w#I.p#P#[default]"
+#[default] #[fg=colour187]#S #[default] #[fg=colour187]w#I.p#P#[default]"
 set -g status-left "
 set -g status-left-attr bright
 set -g status-left-length 20
-#[fg=colour174]#(/home/xiaodong/bin/uptime) #[default]• #[fg=colour174]#(cut -d ' ' -f 1-3 /proc/loadavg)"
+#[fg=colour174]#(/home/xiaodong/bin/uptime) #[default] #[fg=colour174]#(cut -d ' ' -f 1-3 /proc/loadavg)"
 set -g status-right "
 set -g status-right-attr bright
 set -g status-right-length 80
