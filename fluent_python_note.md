@@ -1,3 +1,4 @@
+
 #Fluent Python笔记
 
 
@@ -2034,4 +2035,799 @@ list(iter(d6, 5))
 
 `generator.send` 向生成器内部发送数据，并返回下一个取得的数据(即调用next方法的返回值)，用于使用generator管理coroutine的场景
 
+gengerator实装了`__next__`和`__iter__`方法，可以看做iterator
+
+###chapter 15  Context manager and else blocks
+
+#####else语句
+除了if/else的用法，else还可以在for、while、try等语境下使用
+
+ - **for** else部分只会在for循环正常结束的情况下运行，如果是由于break导致的循环结束，else部分不会被执行
+ - **while** else部分只会在判断条件变成False时执行，break终止循环后不会执行else部分
+ - **try** else部分只会在try内的代码没有出现异常时执行，else部分代码中出现的异常，不会被前面的except捕获
+
+在这种语境下，else的作用类似then，表示正常情况下上面的代码执行之后，后续应该如何
+
+######术语
+*EAFP* Easier to Ask for Forgiveness than Permission  相比去要求访问权限，直接尝试访问然后处理可能出现的异常情况更容易一些
+*LBYL* Look before You Leap  访问之前先去确定目标存在，并保持该状态直到访问操作执行(使用锁或其他机制)
+
+可能场景：  
+对于一个map，A线程检查到某个key存在，但是在A线程发起访问之前，该key被B线程删除  
+EAFP解决方法：使用try/except方式访问map，收到异常时进行异常处理  
+LBYL解决方法：在A线程检查到key存在后，使用线程锁将该map锁定，直到访问结束才释放map对象
+
+#####with模块  
+进入with模块时执行with后的对象的`__enter__`方法，`__enter__`方法如果有返回对象，可以使用as关键字赋予变量名，在with内的代码中使用  
+as部分也可省略，表示后续代码仅在with作用域内执行  
+with内部的代码执行结束后，会执行`__exit__`方法，处理with内为关闭的连接或者文件对象等，以及其他正常的结束处理，返回True表示异常已在方法内部被处理，不需要外部操作。如果返回None，则`__exit__`方法收到的异常会向上一层抛出
+
+`__enter__`方法不接受参数，返回对象可以是None也可以是self(open函数处理文件时)或者其他对象  
+`__exit__`方法接受三个参数，用于在异常处理时使用
+
+ 1. `exc_type` 异常类型
+ 2. `exc_value` 被抛出的异常对象本身
+ 3. `traceback` traceback对象
+
+with模块的用法：控制数据库连接，在threading模块中控制锁、条件判断和信号控制等，使用Decimal对象生成用于数学计算的环境，在测试时加载临时模块
+
+with模块不会创建新的作用域，即使as赋值的变量，在with模块结束后，仍然可以被访问
+
+@contextlib.contextmanager  装饰器，生成可以在with结构中使用的context manager  
+被contextmanager修饰的函数中必须有yield，即是生成器函数  
+函数中yield之前的部分与普通的context manager类的`__enter__`方法相同，yield可以有对象，作用类似`__enter__`方法的返回值，用于as部分  
+yield后的部分作用于`__exit__`方法相同，不同的是此时被传入generator的异常会被视为已经处理掉的，不会被向上抛出。如果需要手动处理异常，则需要在被装饰的函数中重新抛出  
+最好在被contextmanager修饰的函数的yield部分，使用try/except捕捉可能被抛出的异常，防止因with内代码产生异常导致yield后的代码无法执行，被改变的context(上下文)无法恢复
+
+```Python3
+>>> from contextlib import contextmanager
+>>> @contextmanager
+... def mirror():
+...     import sys
+...     original_write = sys.stdout.write
+...     def reversed_write(texts):
+...         original_write(texts[::-1])
+...     sys.stdout.write = reversed_write
+...     msg = ""
+...     try:
+...         yield "Who let the dogs out?"  # yield部分有异常处理
+...     except Exception as te:
+...         msg = "Wrong attribute attached!"
+...     finally:
+...         sys.stdout.write = original_write
+...         if msg: print(msg)
+... 
+>>> with mirror() as what:
+...     print(1234567890)
+...     print(what)
+... 
+0987654321
+?tuo sgod eht tel ohW
+>>> with mirror() as what:
+...     print(1234567890)
+...     "wer".fg  # 触发异常的语句
+...     print(what)
+... 
+0987654321
+Wrong attribute attached!  # 异常被捕获
+>>> print(what)  # with运行结束后环境正常输出
+Who let the dogs out?
+>>> 12345
+12345
+>>> 
+>>> @contextmanager
+... def mirror2():
+...     import sys
+...     original_write = sys.stdout.write
+...     def reversed_write(texts):
+...         original_write(texts[::-1])
+...     sys.stdout.write = reversed_write
+...     yield "Who let the dogs out?"  # 没有在yield部分做异常处理
+...     sys.stdout.write = original_write
+... 
+>>> with mirror2() as what:
+...     print(1234567890)
+...     print(what)
+... 
+0987654321
+?tuo sgod eht tel ohW
+>>> with mirror2() as what:
+...     print(1234567890)
+...     "dfg".dfg  # 异常操作
+...     print(what)
+... 
+0987654321
+Traceback (most recent call last):
+  File "<stdin>", line 3, in <module>
+AttributeError: 'str' object has no attribute 'dfg'  # 出错，没有执行到with的__exit__
+>>> what  # 正常环境仍然没有恢复
+'?tuo sgod eht tel ohW'
+>>> 12345
+54321
+>>>
+```
+
+###chapter 16 coroutines
+coroutine是流程控制的一种形式  
+coroutine常见的形式是生成器函数  
+
+```Python3
+def simple_coro(a):
+    print("-> Started: a = {}".format(a))
+    b = yield a
+    print("-> Received: b = {}".format(b))
+    c = yield a + b
+    print("-> Received: c = {}".format(c))
+```
+
+`coroutine_gen.send(val)` 继续执行coroutine到下一个yield语句，然后返回send的参数，而不是函数中被yield的变量，这是与next方法不同的地方  
+因此，对于send方法，在coroutine函数刚刚被初始化时，由于尚未执行到第一个yield语句，无从赋值，所以无法被执行，会返回TypeError
+
+函数中有yield存在，yield表达式可以有返回值，该返回值会在next函数或者coroutine_gen.send执行时被赋予表达式等号左边的变量  
+每次next或者send调用，都会执行到一个yield语句，然后停止，等待下次next/send调用
+
+```
+>>> coroutine1 = simple_coro(12)
+>>> next(coroutine1)
+-> Started: a = 12
+12  # 执行到第一次yield停止，b尚未被赋值
+>>> coroutine1.send(22)
+-> Received: b = 22  # 通过send方法，b被赋值为22
+34  # 此时a + b的结果
+>>> coroutine1.send(44)  # c被赋值为44，覆盖原结果
+-> Received: c = 44
+Traceback (most recent call last):  # 生成器执行结束，没有后续的yield，抛出StopIteration异常
+  File "<stdin>", line 1, in <module>
+StopIteration
+>>> 
+```
+
+corountine从被声明开始，存在四种状态：
+
+ 1. *GEN_CREATED*  刚被声明，没有被执行
+ 2. *GEN_RUNNING*  被编译器编译，多线程运行或者执行`inspect.getgeneratorstate(coro_gen)`时
+ 3. *GEN_SUSPENDED*  被调用next或者send方法执行到yield语句时
+ 4. *GEN_CLOSED*  coroutine执行结束
+
+可以使用*inspect.getgeneratorstate*查看coroutine对象当前的状态
+
+```
+>>> from inspect import getgeneratorstate
+>>> coro2 = simple_coro(1)
+>>> getgeneratorstate(coro2)  # 刚被创建时
+'GEN_CREATED'
+>>> next(coro2)  # 第一次调用next函数，无法使用send方法
+-> Started: a = 1
+1
+>>> getgeneratorstate(coro2)  # 执行到第一个yield语句
+'GEN_SUSPENDED'
+>>> coro2.send(123)
+-> Received: b = 123
+124
+>>> getgeneratorstate(coro2)  # 第二个yield语句
+'GEN_SUSPENDED'
+>>> coro2.send(4)
+-> Received: c = 4
+Traceback (most recent call last):
+  File "<stdin>", line 1, in <module>
+StopIteration
+>>> getgeneratorstate(coro2)  # 执行结束
+'GEN_CLOSED'
+>>> 
+```
+
+使用corountine定义averager
+
+```
+def coro_avg():
+    total, count, average = 0.0, 0, 0
+    while 1:
+        new_input = yield average
+        total += new_input
+        count += 1
+        average = total / count
+>>> coro1 = coro_avg()
+>>> next(coro1)  # corountine对象在正式使用之前，需要先执行next，使其进入GEN_SUSPENDED状态
+0
+>>> coro1.send(10)
+10.0
+>>> coro1.send(10)
+10.0
+>>> coro1.send(200)
+73.33333333333333
+>>>
+```
+
+每次调用corountine时，被yield的变量的值会被返回，send方法传递的值，会被赋给yield语句的赋值变量
+
+可以定义专门用于coroutine初始化，给返回对象执行next函数的装饰器
+
+coroutine在内部出现异常时，如果异常没有被处理，那么会抛出该异常，然后coroutine本身进入GEN_CLOSED状态，停止遍历，如果继续调用next或者send方法，会触发StopIteration异常
+
+generator.throw(异常)  在yield语句处触发参数中的异常，如果异常被处理，则继续执行，否则抛出异常  
+generator.close()  关闭generator，使其状态变成GEN_CLOSED，继续遍历会触发StopIteration
+
+
+```Python3
+from inspect import getgeneratorstate
+
+class DemoException(Exception):
+    pass
+
+def demo_coro():
+    print("Coroutine starts...")
+    try:
+        while True:
+            try:
+                x = yield
+            except DemoException:
+                print("**** DemoException handled, continue...")
+            else:
+                print("-> coroutine received: {!r}".format(x))
+    finally:
+        print("Corountine ends")
+
+>>> coro1 = demo_coro()
+>>> next(coro1)
+Coroutine starts...
+>>> coro1.send(234)
+-> coroutine received: 234
+>>> getgeneratorstate(coro1)  # send方法，正常的coroutine起始状态
+'GEN_SUSPENDED'
+>>> coro1.send(DemoException)  # 即使send发送的是Exception，也不会被视为coroutine内部的异常，只会被作为对象
+-> coroutine received: <class '__main__.DemoException'>
+>>> getgeneratorstate(coro1)  # coroutine的状态仍然是GEN_SUSPENDED
+'GEN_SUSPENDED'
+>>> coro1.send(TypeError)
+-> coroutine received: <class 'TypeError'>
+>>> getgeneratorstate(coro1)
+'GEN_SUSPENDED'
+>>> coro1.throw(DemoException)  # throw传入的异常会被视为coroutine内部产生的异常
+**** DemoException handled, continue...  # 进入内部的异常处理逻辑
+>>> getgeneratorstate(coro1)  # 传入的异常被处理，coroutine仍然是正常状态
+'GEN_SUSPENDED'
+>>> coro1.throw(TypeError)  # throw传入未被处理的异常，无法被处理，直接抛出
+Corountine ends  # finally部分
+Traceback (most recent call last):  # 抛出的异常
+  File "<stdin>", line 1, in <module>
+  File "<stdin>", line 6, in demo_coro
+TypeError
+>>> getgeneratorstate(coro1)  # 此时coroutine的状态已变成GEN_CLOSED
+'GEN_CLOSED'
+>>> next(coro1)  # next函数触发StopIteration
+Traceback (most recent call last):
+  File "<stdin>", line 1, in <module>
+StopIteration
+>>> coro1.send("QQQ")  # send方法相同
+Traceback (most recent call last):
+  File "<stdin>", line 1, in <module>
+StopIteration
+>>>
+```
+
+**generator.close()**
+
+前置接上声明
+
+```Python3
+>>> coro2 = demo_coro()
+>>> next(coro2)
+Coroutine starts...
+>>> getgeneratorstate(coro2)  # 已进入GEN_SUSPENDED状态
+'GEN_SUSPENDED'
+>>> coro2.send(35)
+-> coroutine received: 35
+>>> coro2.close()  # 关闭coroutine
+Corountine ends
+>>> getgeneratorstate(coro2)  # coroutine状态变为GEN_CLOSED
+'GEN_CLOSED'
+>>> coro2.send(31)  # 继续遍历则发现coroutine已停止
+Traceback (most recent call last):
+  File "<stdin>", line 1, in <module>
+StopIteration
+>>> next(coro2)
+Traceback (most recent call last):
+  File "<stdin>", line 1, in <module>
+StopIteration
+>>>
+```
+
+coroutine函数可以添加return语句，在generator遍历结束时，返回指定结果，函数中同时存在yield和return的写法，在Python3.3引入  
+如果generator部分出错，那么return的返回结果会在抛出的异常中的value属性中，corountine遍历结束，正常的返回值也是在StopIteration.value中
+
+`yield from` 则可以内部处理StopIteration异常，接收最后的返回值返回给用户
+
+the delegating generator中的yield from作用类似管道，通向一个或者多个yield，使用yield from调用subgenerator  
+subgenerator中除了yield，也可以使用return返回值，那么在yield循环结束后，return的返回值会被作为subgenerator的返回值传回yield from语句
+
+在实际应用中，除了通过yield from连接多个subgenerator，还要考虑异常处理的情况
+
+在使用delegating generator的返回对象，通过send方法向subgenerator发送数据时，如果使用throw方法发送异常，  
+只有GeneratorExit异常会被传入delegating generator，因此需要在delegating generator中处理，其他的异常都会被传入subgenerator,  
+而如果subgenerator内产生了异常，StopIteration异常会被delegating generator接收并处理，其他异常则会被抛出
+
+如果delegating generator的返回对象执行close方法，subgenerator如果有close方法，则也会执行，如果subgenerator执行出错，异常会被传给delegating generator，如果正常执行，那么会返回GeneratorExit给delegating generator
+
+
+discrete event simulation DES
+
+taxi cabs simulation
+
+Queue.PriorityQueue(maxsize=0)  可以定义最大长度，达到最大长度后无法继续插入数据，内部数据根据元素的第一个元素进行排序，maxsize是0或None时表示最大长度无限制
+
+3 types using generators
+
+ - "pull" style  iterator
+ - "push" style  push values via send, like the averaging example
+ - "tasks"  异步任务，并发实现
+
+**yield from subgenerator**  默认subgenertaor是未prime的，会通过yield from自动prime到GEN_SUSPEND状态
+
+```
+def pump(ins, outs):
+    for chunck in gen(ins):
+        yield from outs.write(chunck)
+
+def gen(ins):
+    yield "<b>"
+    yield from ins.read_in_chuncks(1000*1000*1000)
+    yield "<b>"
+```
+
+对于ins中的所有事件来说，pump中的每次循环都将执行在同一个位置的yield，
+因此对于不同的gen(ins)元素，pump函数的执行过程互不关联，输出的chunck的写操作可以认为是异步的
+
+
+```
+def coroutine1():
+    while 1:
+        line = (yield)  # 不需要输出时，yield语句直接赋值，需要加上括号，防止将关键字赋值
+        ...
+```
+
+###Chapter 17 Concurrency with future
+
+Python2中单行输出print结果，可以在print元素末尾添加逗号；Python3中则可以定义print函数的end参数，使输出不换行
+
+```Python3
+import sys
+print("ASD", end=" ")
+sys.stdout.flush()
+```
+
+Python默认会在遇到换行符时flush stdout的buffer，如果需要输出限制在一行，则要手动调用sys.stdout.flush()刷新输出buffer
+
+time.sleep() 也会释放当前占用的线程资源，直接等待结束
+
+> The Python threads are good at doing nothing.
+> Just waiting for the main process being released.
+
+如果是CPU密集型的场景，速度更快的pypy更为适用
+
+Python3引入了新的concurrent包  
+concurrent.futures  
+futures.ThreadPoolExecutor  
+executor.submit  
+futures.as_complete  
+futures.ProcessPoolExecutor
+
+tqdm Python的进度条包，可以接收iterator，然后根据完成情况估算剩余时间
+
+```
+from time import sleep
+from tqdm import tqdm
+for i in tqdm(range(1000)):
+    sleep(.01)
+
+```
+
+可以hash的对象，都可以作为dict的key
+
+由于GIL的存在，单进程的Python程序的运行效率可以提高近20倍  
+Python的多线程可以用于并发IO的场景，threading库作为标准库，还是有其存在的价值的
+
+
+###Chapter 18 Concurrency with asyncio
+
+> Concurrency is not parallelism, it's better.
+> With concurrency you can do 100 tasks concurrently with only one core,
+> while to archive parallelism, you need to assign one core per task.
+
+asyncio is named with "Tulip" before included into standard library in Python 3.4
+
+生成运行动画
+
+```
+from time import sleep
+import sys, itertools
+for c in itertools.cycle("|/-\\"):
+    sys.stdout.write(c)
+    sys.stdout.flush()
+    sys.stdout.write("\x08" * len(c))  #在原地输出的关键是在重新写入之前，写入原有字符长度的退格键"\x08"
+    sleep(.1)
+```
+
+根据设计，Python中没有结束线程的API只能等到程序结束或者不再被引用时自动回收
+
+#####线程与协程的区别
+
+######asyncio.Task vs. threading.Thread  
+ * Task类似于像gevent这样专用于多进程的特殊线程
+ * Task执行一个协程，Thread执行的则是一个可执行对象
+ * 用户不能直接创建Task对象，必须是通过将coroutine传入**asyncio.async()**或者**loop.create_task()**方法这样的方式，才能获取一个scheduled Task
+ * Thread执行时，被执行的对象是被作为普通的可执行对象执行的，不需要特殊的执行方式；而Task中执行操作则是通过**yield from coroutine1**这样的方式
+ * 出于运行环境稳定性的考量，没有API可以从外部停止Thread；而实例方法Task.cancel()可以在coroutine内部触发**CancelledError**，coroutine可以捕获该异常来判断是否需要终止任务执行
+ * 被@asyncio.coroutine修饰的函数，必须通过`loop.run_until_complete()`来调用执行，才可以正常运行
+
+多线程之间需要进行协调处理，为了保证线程间的数据同步，还需要考虑使用线程锁和死锁的可能  
+但是对于协程，同一时间实际运行的协程只会有一个，不存在这些问题
+
+######asyncio.Future vs. concurrent.futures.Future
+ - `BaseEventLoop.create_task()` 创建coroutine并将它放进事件循环中；Executor.submit()创建concurrent.futures.Future实例  
+ - asyncio.Future同样有`.done()`、`.add_done_callback()`、`.results()`等方法，`.done()`、`.add_done_callback()`与concurrent.futures.Future的同名方法的用法类似，但是asyncio.Future的`.result()`方法不接收参数，无法指定timeout时间，执行时不会阻塞正在等待执行结束的程序，而是返回异常*asyncio.InvalidStateError*  
+ - 使用`variable1 = yield from asyncio.Future实例`，之后附加后续代码的写法，作用和将后续代码写在`.add_done_callback()`中提交给事件作用相同，因为yield from会自动处理suspended状态的函数状态变化后的返回值，并将它返回给主调用过程  
+ - 通过使用yield from，操作asyncio.Future可以省去繁复的`.done()`、`.add_done_callback()`、`.results()`等方法的调用
+
+I/O asynchronous
+Only the application code blocks on I/O scenarios, the main thread on which the event loop and application code are running never blocks
+
+CPU的运算速度比内存和硬盘的读写速度快得多，因此使用非阻塞IO的函数，可以很大程度上提高程序的运行速度。NodeJS也是同样的道理
+
+如果在一个函数中使用了yield from而使其成为异步函数，就不能以普通函数的调用方式使用，而需要先声明一个事件循环，通过事件循环执行异步函数(`loop.create_task(three_stage(step1))`)
+
+`loop.run_in_executor` 可以在异步函数内部异步执行指定的函数
+
+
+关于何时使用yield from: 一般规则是对`asyncio.Future`的实例和coroutine使用yield from  
+使用with语句控制semaphore的作用范围
+
+####Gevent
+gevent yield语句、IO异步，网络连接、文件操作均会异步处理
+"确定的并发" gevent的map、`imap_unordered`等的并发结果会按照提交顺序返回，不会因为是异步而产生不同顺序的返回结果
+
+创建greenlet的方法：
+
+ 1. `gevent.spawn(func, args)`创建异步程序
+ 2. `gevent.Greenlet.spawn(func, args)`，以上两个方式创建异步程序后，需要放在一个数组中，调用gevent.joinall运行
+ 3. 继承`gevent.Greenlet`，重载`_run`方法，然后实例化，再调用`Greenlet.start`和`Greenlet.join`运行实例
+
+gevent.spawn返回的异步进程，一个greenlet，本身的状态和异常都被保存在自身状态中，并不会向上层抛出  
+也就是说，一个greenlet运行时如果产生了异常而且未被处理，异常也只会出现在greenlet.exception中，不会抛出到调用程序
+
+gevent.Timeout 可以设置全局异步的tiemout时间限制，也可以用在with控制的上下文中，限制作用范围
+
+```
+from gevent import Timeout
+
+class TooLong(Exception):
+    pass
+
+with Timeout(time_to_wait, TooLong):
+    gevent.sleep(10)
+```
+
+一个Timeout类实例的start方法，作用范围是到另一个`Timeout.start_new`之前，也可以是全局范围的
+
+
+`gevent.monkey.patch_socket()` 只修改标准的socket库为gevent的异步socket
+`gevent.monkey.patch_all()` 修改所有的IO操作和yield等操作为异步的
+
+猴子补丁(monkey patching)是一种"有用的邪恶(useful evil)"，很容易被滥用
+
+
+greenlet之间通过事件(event)进行通信，类似multiprocessing中多进程之间的Queue、Pipe等类  
+`gevent.pool.Group` 管理、运行greeenlet的  
+运行重复的任务时，可以使用`gevent.pool.Pool`  
+
+Windows不能监视pipe事件
+
+Actors模型，每个Actor有一个可以从其他Actors接收消息的收件箱，Actor内部的主循环遍历收到的消息，根据消息期望的行为采取操作
+
+asyncio.StreamWriter中  
+write方法是将数据写入缓存(buffer)，但未必直接输出到IO，因此是非阻塞的同步方法  
+drain方法是将缓存数据全部输出到IO，并清空缓存，是异步方法，需要通过yield from 调用
+
+同理，asyncio.StreamReader.readline也是异步方法，需要yield from调用
+
+aiohttp的http server程序，会自动将非异步的后台方法转化成异步方法执行
+
+Vaurien库 为TCP请求在前台和后台服务器/数据库之间的通信添加延迟和失败率
+
+###Chapter 19 dynamic attribute
+
+*getattr*对应内部方法`__getattr__(self, key)`
+
+*@classmethod*  修饰类方法，接收的参数是类对象和传给类对象的参数对象
+
+`__new__`方法属于classmethod，之所以重写时不需要加上@classmethod装饰器，是因为编译器会识别这个方法并对它单独处理  
+`__new__`方法接收类对象和调用类对象时传入的参数，`__new__`必须返回一个实例，如果该实例是参数中的类对象的实例，那么编译器会在之后调用该类的`__init__`方法初始化对象，`__init__`接收的self参数，就是`__new__`返回的实例对象  
+`__new__`也可以返回其他类的实例对象，这样的话编译器检查到返回实例不是参数类的实例时，就不会调用参数类的`__init__`方法
+
+`self.__dict__.update(kwargs)`  更新键值对参数到类属性，如果有在`__slots__`定义的同名属性，则不会被更改  
+但是这样定义的类，如果有其他的方法，初始化或者被继承之后可能会有同名属性覆盖方法的情况，需要注意  
+这时可以考虑将方法定义成classmethod，然后通过`self.__class__.xxx()`调用
+
+@property  修饰内部方法，可以将其作为只读属性以点号的方式调用
+
+```
+>>> class TC1(object):
+...     @property
+...     def p1(self, a=6):
+...         print("param a: {}".format(a))
+...         return "Readonly property p1"
+... 
+>>> 
+>>> tc = TC1()
+>>> tc.p1
+param a: 6
+'Readonly property p1'
+>>> tc.p1(45)  # 即使定义了参数，也无法被直接以函数的形式调用，除非原本返回的就是个接收参数的callable对象
+param a: 6
+Traceback (most recent call last):
+  File "<stdin>", line 1, in <module>
+TypeError: 'str' object is not callable
+>>> tc.p1 == "Readonly property p1"
+param a: 6
+True
+>>> 
+>>> tc.p1="123"  # 无法被赋值
+Traceback (most recent call last):
+  File "<stdin>", line 1, in <module>
+AttributeError: can't set attribute
+>>>
+```
+
+某个被@property修饰的属性，也可以通过设置同名的setter方法，使它可以被赋值
+
+```
+class LineItem:
+    def __init__(self, description, weight, price):
+        self.description = description
+        self.weight = weight
+        self.price = price
+    def subtotal(self):
+        return self.weight * self.price
+    @property
+    def weight(self):
+        return self._weight
+    @weight.setter  # 装饰符是“属性名.setter”的形式
+    def weight(self, value):  # setter方法与getter方法和暴露给外部的属性名相同
+        if value > 0:
+            self._weight = value
+        else:
+            raise ValueError('value must be above 0')
+>>> li1 = LineItem("cereals", 100, 2.4)
+>>> dir(li1)  # 看不到getter和setter方法定义的_weight属性
+['__doc__', '__init__', '__module__', 'description', 'price', 'subtotal', 'weight']
+>>> li1.weight
+100
+>>> li1.subtotal()
+240.0
+>>> li1.weight = 200  # weight可以被直接赋值
+>>> li1.subtotal()
+480.0
+>>> li1.TRE = 546  # 使用赋值语句增加新的属性不会报错
+>>> dir(li1)
+['TRE', '__doc__', '__init__', '__module__', 'description', 'price', 'subtotal', 'weight']
+>>>
+```
+
+> The cure for repetition is abstraction.
+
+标准库函数*vars*  有参数传入时，返回该参数对象的`__dict__`属性；没有参数传入时，返回结果和locals()相同
+
+定义docstirng的方式
+
+ - 在使用@property装饰器时传入doc参数
+  `weight = property(get_weight, set_weight, doc="weight in kilograms")`
+ - 设置对象的`__doc__`属性
+ - 在声明语句开始时使用文本块("""或''')写出，会被编译器自动作为docstring使用
+ 
+ ```
+>>> class Class(object):
+...     """Default docstring for Class"""  # 定义了docstring，如果没有其他内容，可以不写pass
+... 
+>>> Class.__doc__
+'Default docstring for Class'
+>>> 
+ ```
+
+属性名.deleter  装饰器可以用于定义删除属性时使用的方法，使用`del 实例名.属性a`删除属性，也可以使用内部方法`__delattr__`
+
+
+?? 编译器查找属性时，默认是从`__class__`开始的，也就是说，类属性会覆盖实例同名属性
+
+`__slots__`定义类中允许存在的属性，定义了`__slots__`的类的实例中，没有`__dict__`属性
+
+```
+class TestClass1(object):
+    def __init__(self):
+        self.cereals = ["rice", "wheat", "grains"]
+    def __delattr__(self, name):
+        if name == "cereals" and self.cereals:
+            print("Lost {}".format(self.cereals.pop()))
+        else:
+            del self.__dict__[name]
+
+>>> c1 = TestClass1()
+>>> del c1.cereals
+Lost grains
+>>> del c1.cereals
+Lost wheat
+>>> del c1.cereals
+Lost rice
+>>> del c1.cereals  # 可以正常删除self.__dict__中的key
+>>> 
+>>> c1.re = 545  # 允许以赋值的方式增加新的属性
+>>> del c1.re
+>>> 
+
+class TestClass2(object):
+    __slots__ = ("cereals")
+    def __init__(self):
+        self.cereals = ["rice", "wheat", "grains"]
+    def __delattr__(self, name):
+        if name == "cereals" and self.cereals:
+            print("Lost {}".format(self.cereals.pop()))
+        else:
+            del self.__dict__[name]
+
+>>> c2 = TestClass2()
+>>> del c2.cereals
+Lost grains
+>>> del c2.cereals
+Lost wheat
+>>> del c2.cereals
+Lost rice
+>>> del c2.cereals  # __slots__代替了__dict__，因此del self.__dict__的写法出错
+Traceback (most recent call last):
+  File "<stdin>", line 1, in <module>
+  File "<stdin>", line 9, in __delattr__
+AttributeError: 'TestClass2' object has no attribute '__dict__'
+>>> c2.re = 345  # 不能给实例添加新的属性
+Traceback (most recent call last):
+  File "<stdin>", line 1, in <module>
+AttributeError: 'TestClass2' object has no attribute 're'
+>>> 
+```
+
+标准库函数*dir*  有参数时返回参数对象的属性，返回结果中不会列出`__dict__`，但是会列出`__dict__`中的键，此外，`__mro__`、`__bases__`和`__name__`属性也不会被列出  
+没有传入参数时，dir调用会列出当前作用范围内的可用对象名  
+与vars返回`__dict__`的设计正好相反
+
+getattr、setattr、del、dir这些标准库函数都会触发对应的内部函数，所有功能实际上是在内部函数中实现的
+
+getattr  首先触发`__getattribute__`，当在对象、类和子类中找不到指定的属性名时，会去取得`obj.no_such_attr`属性，然后执行的`getattr(obj, 'no_such_attr')`和`hasattr(obj, 'no_such_attr')`才会触发`Class.__getattr__(obj, 'no_such_attr')`方法  
+
+setattr  触发`__setattr__`方法，对象属性的点式赋值和setattr函数都会触发`Class.__setattr__(obj, 'attr', value)`  
+
+`__delattr__`、`__dir__`、`__getattr__`、`__getattribute__`、`__setattr__`这些方法都是类方法，使用时也是通过类对象被调用 `dir(x) 等价于 x.__class__.__dir__(xx)`，因此不会被实例的同名属性覆盖
+
+如果自定义类没有实装`__get__`方法，那么默认的`__get__`会查找`__dict__`属性，因此实例属性如果被写入，则会覆盖同名(namesake)类属性
+
+###chapter 20
+
+重写`__set__`或`__setattr__`方法时，需要注意不要直接使用当前对象本身的赋值方法，不然可能会造成死循环递归
+
+overridding descriptor  重写内部`__set__`方法的descriptor
+
+descriptor的主要应用场景是用于实现抽象出的第一层、第二层甚至更高的实体关系，通过一层层类的组合继承，完成对于一个规则的完整实现，不同规则之间如果存在相同的高层次抽象，那么代表高层次抽象的类中，对应的规则可以被定义为`@abc.abstractmethod`抽象方法，分别在子类中进行不同的实现
+
+#####`__get__`和`__set__`方法的非对称性
+当查找一个Python对象的某个属性时，如果实例中不包含这个属性，那么会去类属性里寻找，如果找不到，才报出AttributeError  
+而设置对象的某个属性时，即使该对象没有特定的属性，也可以直接赋值而给对象添加属性，这不会影响类属性
+
+`__set__`方法在实例属性被赋值时调用，但是`__get__`却会在当实例中没有指定名称的属性时去类中查询；因此对一类对象的属性，如果要实现自定义的get和set操作，就需要在类对象的父类(也就是元类，metaclass)中定义`__set__`和`__get__`方法
+
+>Tip:  
+>`assert "STRESSED"[::-1] == "DESSERTS"`
+
+类对象和实例对象中都会保存对类方法的引用，它们指向同一个对象，但是对编译器来说，类对象指向的方法是一个函数，而实例对象的引用，指向的则是类方法
+
+
+#####Descriptor usage tips
+ 1. 使用*property*函数/装饰器  如果是定义只读属性，那么使用property可以很方便的完成功能
+ 2. 只读的descriptor需要定义`__set__`方法 如果只定义了`__get__`方法，那么给同名属性赋值时，原有的值会被覆盖，因此最好也定义`__set__`方法，使对只读属性进行赋值操作时，抛出*AttributeError*异常
+ 3. 属性有效性检查只在`__set__`方法中起作用
+ 4. 缓存数据只需要`__get__`方法  如果获取某个值需要耗费很长的时间，那么可以在`__get__`方法里定义取值操作，直到使用时才去取值，而且只需要花费一次等待时间，后续的取值都可以从实例的`__dict__`中取得，不会再一次触发`__get__`方法
+ 5. 普通的类方法可以被实例的同名属性覆盖  特殊的类方法则会在调用时直接读取类方法，不从实例读取，因此不会被覆盖
+
+ 
+
+###chapter 21 class metaprogramming
+record_factory 类似collections.namedtuple的实现，这样产生的实例无法被pickle序列化
+
+```
+def record_factory(cls_name, field_names):
+    try:
+        field_names = field_names.replace(",", " ").split()
+    except AttributeError:
+        pass
+    field_names = tuple(field_names)
+
+    def __init__(self, *args, **kwargs):
+        attrs = dict(zip(self.__slots__, args))
+        attrs.update(kwargs)
+        for name, value in attrs.items():
+            setattr(self, name, value)
+
+    def __iter__(self):
+        for name in self.__slots__:
+            yield getattr(self, name)
+
+    def __repr__(self):
+        values = ", ".join('{}={!r}'.format(*i) for i in zip(self.__slots__, self))
+        return "{}({})".format(self.__class__.__name__, values)
+
+    cls_attrs = dict(
+        __slots__ = field_names,
+        __init__ = __init__,
+        __iter__ = __iter__,
+        __repr__ = __repr__
+        )
+    return type(cls_name, (object,), cls_attrs)
+
+```
+
+
+*class decorator*  直接在类初始化后接收返回的类对象，可以在这时对类对象进行重新修改  
+不足之处是类装饰器只对父类起作用，无法作用于子类
+
+```
+# class decorator
+def entity(cls):
+    for key, attr in cls.__dict__.items():
+        if isinstance(attr, Validated):
+            type_name = type(attr).__name__
+            attr.storage_name = '_{}#{}'.format(type_name, key)
+    return cls  # 直接更新cls中的数据
+
+# 使用
+@entity
+class LineItem:
+    description = NonBlank()
+    weight = Quantity()
+    price = Quantity()
+    def __init__(self, description, weight, price):
+        ...
+
+```
+
+
+#####import time VS. run time  
+对于函数声明，在import时编译器只会编译函数代码，而不会执行，只有在运行时才会去执行已经被编译的代码  
+而对于类声明，不管是直接定义的外部类还是定义在类或函数内部的内部类，都会在import时被执行，定义类属性和方法，生成类对象
+
+import时不会执行`if __name__ == "__main__": ...`里的代码，只有在运行时会执行
+
+Python中的大多数类和用户自定义的类对象，都是**type**类的实例，也就是说type是它们的*metaclass*  
+而type类是它自身的实例(防止自身循环递归)
+
+以上类对象的顶层父类都是object，这与它们都是type类的实例不冲突
+
+```
+>>> str.__class__
+<type 'type'>
+>>> type.__class__
+<type 'type'>
+>>> 
+```
+
+如果一个类要实现metaclass的功能，那么就必须继承type类，以产生新的类  
+
+使用`from A import b`的形式import时，仍然会处理整个模块  
+子类中如果没有重新定义`__init__`方法，在编译时则会去调用父类的`__init__`方法  
+在声明类时，可以通过*metaclass*参数指定所使用的元类，这样，在编译器编译了类之后，会使用指定的元类去构建类对象，而不是使用默认的type类
+
+> 在Python2中，定义元类需要在类声明中指定`__metaclass__`属性，没办法像3里面那样以参数形式指定
+
+`__prepare__`方法  
+只在Python3中有效，只能用于元类的定义中，执行时间在`__new__`方法之前，记录被生成的类的属性名和属性对象的映射关系，保存在一个键值对形式的对象中返回，供`__init__`方法在初始化类时使用。  
+
+如果`__prepare__`方法返回的是有序的映射关系，例如OrderedDict，那么就记录了在创建类时属性的创建顺序，如果将这个顺序保存在新创建的类对象中，那么类对象被创建时的属性创建顺序也就可以被保存下来
+
+`cls.__bases__`  返回父类组成的tuple  
+`cls.__qualname__`  返回以"."方式连接的父类名的字符串，如"A.B.C"  
+`cls.subclasses()`  返回直接父类的弱引用
+`cls.mro()`  返回`__mro__`属性中保存的父类信息
 
