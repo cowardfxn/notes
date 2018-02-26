@@ -129,4 +129,41 @@ Python2.2引入的生成器使代码的执行可以被暂停。而在Python2.5�
 ### `async`和`await`是怎么工作的
 
 #### 在Python3.4中的工作方式
+在Python3.3推动生成器的发展和事件循环以`asyncio`的形式出现之前，Python3.4以并发编程的形式实现了异步编程。从本质上说，异步编程就是无法提取预知执行时间的计算机程序(故称异步，而非同步)。并发编程的代码即使运行在同一个线程中，执行时也互不干扰(并发而非并行)。例如，以下Python3.4的代码中的两个异步并发函数调用，每秒向下计数，互不干扰。
+
+```
+import asyncio
+
+# Borrowed from http://curio.readthedocs.org/en/latest/tutorial.html.
+
+def countdown(number, n):
+    while n > 0:
+        print('T-minus', n, '({})'.format(number))
+        yield from asyncio.sleep(1)
+        n -= 1
+
+loop = asyncio.get_event_loop()
+tasks = [
+    asyncio.ensure_future(countdown('A', 2)),
+    asyncio.ensure_future(countdown('B', 3))
+]
+loop.run_until_complete(asyncio.wait(tasks))
+loop.close()
+```
+
+在Python3.4中，`asyncio.coroutine`装饰器被用于修饰使用`asyncio`并在它的事件循环中执行的函数。这是Python中第一次出现明确的协程定义：一种实装了PEP342中向生成器添加的方法，基类是抽象类`collections.abc.Coroutine`的对象。这个定义让那些原本并无异步定义的生成器也带上了协程的特征。而为了解决这种混淆，`asyncio`规定所有作为协程执行的函数都需要以`asyncio.coroutine`进行修饰。
+
+有了这样一个明确的协程的定义(同时符合生成器的接口)，你可以使用`yield from`将任何`asyncio.Future`对象传入事件循环，在等待事件发生时暂停程序执行(future对象是`asyncio`的一种实现方式，此处不再详述)。future对象进入事件循环后就处于事件循环的监控之下，一旦future对象完成了自身任务，事件循环就会唤醒原本暂停执行的协程继续执行，future对象的返回结果则通过`send()`方法由事件循环传给协程。
+
+以上文代码为例，事件循环启动了两个调用`call()`函数的协程，运行到某个协程中包含`yield from`和`asyncio.sleep()`语句处，这条语句将一个`asyncio.Future`对象返回事件循环，暂停协程的执行。这时事件循环会为future对象等待一秒(并监控其他程序，例如另外一个协程)，一秒后事件循环唤醒返回future对象的被暂停`countdown()`协程继续执行，并把future对象的执行结果归还原协程。这个循环过程会持续到`countdown()`协程结束执行，事件循环中没有被监控的事件位置。稍后我会用一个完整的例子详细解释协程/事件循环结构的工作流程，但首先，我想解释一下`async`和`await`是如何工作的。
+
+#### 从`yield from`到Python3.5中的`await`
+在Python3.4中，一个用于异步执行的协程代码会被标记成以下形式：
+
+```
+# 这种写法在Python3.5中同样有效
+@asyncio.coroutine
+def py34_coro():
+    yield from stuff()
+```
 
