@@ -167,3 +167,57 @@ def py34_coro():
     yield from stuff()
 ```
 
+Python3.5也添加了一个作用和`asyncio.coroutine`相同，用于修饰协程函数的装饰器`types.coroutine`。你也可以使用`async def`语法定义协程函数，但是在这样定义的协程函数中不能使用`yield`语句，只允许使用`return`或`await`语句返回数据。
+
+```
+async def py35_coro():
+    await stuff()
+```
+
+对同一个协程概念，添加了多个不同的语法，是为了严格协程的定义。这些陆续补充的语法，使协程从抽象的接口变成了具体的对象类型，让普通的生成器和协程用的生成器有了明显的区别(`inspect.iscoroutine()`方法的判断标准则比`async`还要严格)。
+
+另外，除了`async`，Python3.5页引入了`await`语法(只能在`async def`定义的函数中使用)。虽然`await`的使用场景与`yield from`类似，但是`await`接收的对象是不同的。身为由于协程而产生的语法，`await`可以接收协程对象简直理所当然。但是当你对某个对象使用`await`语法时，技术上说，这个对象必须是可等待对象(awaitable object)：一种定义了返回一个非协程自身的遍历器的`__await__()`方法的对象。协程本身也被认为是可等待对象(体现在Python语言设计中，就是`collections.abc.Coroutine`继承了`collections.abc.Awaitable`)。可等待对象的定义遵循着Python中将大多数语法结构在底层转换成方法调用的传统设计思想，例如`a + b`等价于`a.__add__(b)`或`b.__radd__(a)`。
+
+那么在编译器层面`yield from`和`await`的运行机制有什么区别(例如`types.coroutine`修饰的生成器和`async def`语法定义的函数)呢？让我们看看上面两个例子在Python3.5中执行的字节码细节，`py34_coro()`执行时的字节码是：
+
+```
+In [31]: dis.dis(py34_coro)
+  3           0 LOAD_GLOBAL              0 (stuff)
+              3 CALL_FUNCTION            0 (0 positional, 0 keyword pair)
+              6 GET_YIELD_FROM_ITER
+              7 LOAD_CONST               0 (None)
+             10 YIELD_FROM
+             11 POP_TOP
+             12 LOAD_CONST               0 (None)
+             15 RETURN_VALUE
+```
+
+`py35_coro()`执行时的字节码是：
+
+```
+In [33]: dis.dis(py35_coro)
+  2           0 LOAD_GLOBAL              0 (stuff)
+              3 CALL_FUNCTION            0 (0 positional, 0 keyword pair)
+              6 GET_AWAITABLE
+              7 LOAD_CONST               0 (None)
+             10 YIELD_FROM
+             11 POP_TOP
+             12 LOAD_CONST               0 (None)
+             15 RETURN_VALUE
+```
+
+除了`py34_coro`多了一行装饰器造成的行号的区别，两组字节码的区别集中在`GET_YIELD_FROM_ITER`操作符和`GET_AWAITABLE`操作符。两个函数都是以协程的语法声明的。对于`GET_YIELD_FROM_ITER`，编译器只检查参数是生成器或者协程，否则就调用`iter()`函数遍历参数(`types.coroutine`装饰器修饰了生成器，让代码对象在C代码层面附带了`CO_ITERABLE_COROUTINE`标志，因此`yield from`语句可以在协程对象中接收协程对象)。
+
+`GET_AWAITABLE`则是另外一番光景了。虽然同`GET_YIELD_FROM_ITER`操作符一样，字节码也接收协程对象，但它不会接收没有协程标记的生成器。而且，正如前文所述，字节码不止接收协程对象，也可以接收可等待对象。这样，`yield from`语句和`await`语句都可以实现协程概念，但一个接收的是普通的生成器，另一个是可等待对象。
+
+也许你会好奇，为什么基于`async`的协程和基于生成器的协程在暂停时接收对象会是不同的？主要目的是让用户不至于混淆两种类型的协程实现，或者不小心弄错相近API的参数类型，进而影响Python最重要的特性的编程体验。就像生成器继承了协程的API，在需要协程时却使用的生成器的情况屡见不鲜。生成器的使用场景不止以协程实现流程控制的情况，需要让用户容易分辨什么时候不应该使用生成器。可是Python不是需要预编译的静态语言，因此在使用基于生成器的协程时编译器只能做到在运行时进行检查。换句话说，就算使用了`types.coroutine`装饰器，编译器也无法确定生成器会担当本职工作还是扮演协程的角色(记住，即使代码中明明白白使用了`types.coroutine`装饰器，依然有在之前的代码中`types = spam`这样的语句存在的可能)，编译器会根据已知的信息，在不同的上下文环境下调用不同的操作符。
+
+对于基于生成器的协程和`async`定义的协程的区别，我的一个非常重要的观点是，只有基于生成器的协程可以真正的暂停程序执行，并把外部对象传入事件循环。当你使用事件循环相关的函数，如`asyncio.sleep()`时，这些函数与事件循环的交互所用的内部的API，事件循环究竟如何变化，并不需要用户担心，因此也许你很少看到这样底层的说法。我们大多数人其实并不需要真正实现一个事件循环的结构，而只是使用`async`协程这样的代码结构来通过事件循环实现某个功能。但如果你像我一样好奇，为什么我们不能使用`async`协程实现类似`asnycio.sleep()`的功能，这就是答案。
+
+#### 总结
+让我们总结一下这两个相似的术语。使用`async def`可以定义协程，使用`types.coroutine`装饰器可以将一个生成器--返回一个不是协程的遍历器--声明为协程。`await`语句只能用于可等待对象(`await`不能作用于普通的生成器)，除此之外与`yield from`的功能基本相同。`async`函数定义的协程中一定会有`return`语句--包括每个Python函数都有的默认返回语句`return None`--和/或`await`语句(不能使用`yield`语句)。对`async`函数所添加的限制，是为了保证用户不会混淆它和基于生成器的协程，两者的期望用途差别很大。
+
+### 请把`async/await`视作异步编程的API
+David Bzazley的Python Brasil 2015 keynote让我发现自己忽略了一件很重要的事。在那个演讲中，David指出，`async/await`其实是一种异步编程的API(他在Twitter上对我复述了这句话)。我想David要说的是，我们不应该用`asnycio`类比`async/await`，认为`async/await`是同步的，而应该利用`async/await`，让`asyncio`成为异步编程的框架。
+
+David对将`async/await`作为异步编程API的想法深信不疑，他甚至在`curio`项目中实现了自己的事件循环。
