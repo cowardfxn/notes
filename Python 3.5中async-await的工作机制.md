@@ -1,6 +1,6 @@
 # Python 3.5中async/await的工作机制
 
-Python核心开发组成员的身份，让我对于理解这门语言的工作机制充满了兴趣。虽然我一直都明白，我不可能对这门语言做到全知全能，但即便是为了能够解决各种issue和参与一般的语言设计，我觉得有必要去试着常识并理解Python的核心以及内核是如何工作的。
+Python核心开发组成员的身份，让我对于理解这门语言的工作机制充满热情。虽然我明白，自己不可能对这门语言做到全知全能，但即便是为了能够解决各种issue和参与一般的语言设计，我觉得有必要去试着常识并理解Python的核心以及内核是如何工作的。
 
 话虽如此，直到最近我才理解了Python3.5中async/await是如何工作的。我所知道的是，Python3.3中的`yield from`和Python3.4中的`asyncio`让这个新语法得以在Python3.5中实现。由于日常工作中没有接触多少网络编程--`asyncio`的主要应用领域，虽然它的能力不止于此--我对async/await并没有关注太多。换个直白点的说法，我知道：
 
@@ -220,4 +220,133 @@ In [33]: dis.dis(py35_coro)
 ### 请把`async/await`视作异步编程的API
 David Bzazley的Python Brasil 2015 keynote让我发现自己忽略了一件很重要的事。在那个演讲中，David指出，`async/await`其实是一种异步编程的API(他在Twitter上对我复述了这句话)。我想David要说的是，我们不应该用`asnycio`类比`async/await`，认为`async/await`是同步的，而应该利用`async/await`，让`asyncio`成为异步编程的框架。
 
-David对将`async/await`作为异步编程API的想法深信不疑，他甚至在`curio`项目中实现了自己的事件循环。
+David对将`async/await`作为异步编程API的想法深信不疑，他甚至在`curio`项目中实现了自己的事件循环。这个事实侧面证明了Python中`async/await`作为异步编程模块的作用(而且不像其他集成了事件循环的语言那样，需要让用户实现事件循环和底层细节)。`async/await`语法让像`curio`这样的项目实现不同的底层操作(`asyncio`使用future对象与事件循环进行交互，而`curio`使用元祖对象)，还让它们可以实现不同的侧重和性能优化(为了易于扩展，`asyncio`实现了完整的传输和协议层框架，而相对简单的`curio`则需要用户实现那些框架，但也因此`curio`运行速度更快)。
+
+看完了Python中异步编程的(简略)历史，很容易得出`async/await` == `asyncio`的结论。我的意思是，`asyncio`导致了Python3.4中异步编程的出现，并且推动了Python3.5中`async/await`的产生。但是，`async/await`的设计非常灵活，甚至到了*不需要*使用`asyncio`的地步，也不需要让`asyncio`框架为了适应`async/await`语法而做出多少改变。简而言之，`async/await`语法延续了Python在保证设计实用性的同事尽可能的让设计灵活的传统。
+
+### 一个例子
+看到这里，你的脑子里应该已经充满了各种新术语和新概念，但对于这些新语法如何实现异步编程却仍一知半解。为了加深你的理解，以下是一个(做作的)异步编程的例子，包括完整的从时间循环到相关业务函数的代码。在这个例子中，协程的用途是实现独立的火箭发射倒计时器，产生的效果却像是在同时倒计时。这是通过异步编程实现的并发，三个协程运行在在同一个线程中，却可以彼此互不干扰。
+
+```
+import datetime
+import heapq
+import types
+import time
+
+
+class Task:
+
+    """Represent how long a coroutine should wait before starting again.
+
+    Comparison operators are implemented for use by heapq. Two-item
+    tuples unfortunately don't work because when the datetime.datetime
+    instances are equal, comparison falls to the coroutine and they don't
+    implement comparison methods, triggering an exception.
+    
+    Think of this as being like asyncio.Task/curio.Task.
+    """
+
+    def __init__(self, wait_until, coro):
+        self.coro = coro
+        self.waiting_until = wait_until
+
+    def __eq__(self, other):
+        return self.waiting_until == other.waiting_until
+
+    def __lt__(self, other):
+        return self.waiting_until < other.waiting_until
+
+
+class SleepingLoop:
+
+    """An event loop focused on delaying execution of coroutines.
+
+    Think of this as being like asyncio.BaseEventLoop/curio.Kernel.
+    """
+
+    def __init__(self, *coros):
+        self._new = coros
+        self._waiting = []
+
+    def run_until_complete(self):
+        # Start all the coroutines.
+        for coro in self._new:
+            wait_for = coro.send(None)
+            heapq.heappush(self._waiting, Task(wait_for, coro))
+        # Keep running until there is no more work to do.
+        while self._waiting:
+            now = datetime.datetime.now()
+            # Get the coroutine with the soonest resumption time.
+            task = heapq.heappop(self._waiting)
+            if now < task.waiting_until:
+                # We're ahead of schedule; wait until it's time to resume.
+                delta = task.waiting_until - now
+                time.sleep(delta.total_seconds())
+                now = datetime.datetime.now()
+            try:
+                # It's time to resume the coroutine.
+                wait_until = task.coro.send(now)
+                heapq.heappush(self._waiting, Task(wait_until, task.coro))
+            except StopIteration:
+                # The coroutine is done.
+                pass
+
+
+@types.coroutine
+def sleep(seconds):
+    """Pause a coroutine for the specified number of seconds.
+
+    Think of this as being like asyncio.sleep()/curio.sleep().
+    """
+    now = datetime.datetime.now()
+    wait_until = now + datetime.timedelta(seconds=seconds)
+    # Make all coroutines on the call stack pause; the need to use `yield`
+    # necessitates this be generator-based and not an async-based coroutine.
+    actual = yield wait_until
+    # Resume the execution stack, sending back how long we actually waited.
+    return actual - now
+
+
+async def countdown(label, length, *, delay=0):
+    """Countdown a launch for `length` seconds, waiting `delay` seconds.
+
+    This is what a user would typically write.
+    """
+    print(label, 'waiting', delay, 'seconds before starting countdown')
+    delta = await sleep(delay)
+    print(label, 'starting after waiting', delta)
+    while length:
+        print(label, 'T-minus', length)
+        waited = await sleep(1)
+        length -= 1
+    print(label, 'lift-off!')
+
+
+def main():
+    """Start the event loop, counting down 3 separate launches.
+
+    This is what a user would typically write.
+    """
+    loop = SleepingLoop(countdown('A', 5), countdown('B', 3, delay=2),
+                        countdown('C', 4, delay=1))
+    start = datetime.datetime.now()
+    loop.run_until_complete()
+    print('Total elapsed time is', datetime.datetime.now() - start)
+
+
+if __name__ == '__main__':
+    main()
+```
+
+正如前文所说，这个例子是有意为之，但如果在Python3.5下运行，你会发现虽然三个协程在同一线程中互不干扰，但总运行时间是5秒左右。你可以把`Task`，`SleepingLoop`和`sleep()`视作像`asyncio`和`curio`这样生成事件循环的框架提供的接口，对普通用户来说，只有`countdown()`和`main()`函数才有价值。你可以发现，`async`，`await`语句，甚至整个异步编程，都不是无法理解的魔术，`async/await`只是Python为了让异步编程更简便易用而添加的API。
+
+
+### 我对未来的愿景
+现在我已经理解了Python中的异步编程，我想把它用到所有地方！这个精巧高效的概念完全可以替代线程的作用。问题是，Python3.5和`async/await`都是发布不久的新事物，这意味着像这样支持异步编程的库数量不会太多。例如，要发送HTTP请求，你要么手动构造HTTP请求对象(噫~)，然后用一个像`aiohttp`的框架把HTTP放进另外的事件循环(对于`aiohttp`，是`asyncio`)，要么等着那一天出现一个像`hyper`这样的项目，对HTTP这类I/O进行抽象，让你可以使用任意的I/O库(遗憾的是到目前为止`hyper`只支持HTTP/2)。
+
+以我的个人观点，我希望像`hyper`这样的项目可以继续发展，分离从I/O获取二进制数据和解析二进制数据的逻辑。Python中大部分的I/O库都是同时进行I/O操作和处理从I/O接收的数据，因此，这样的操作分离的抽象意义重大。Python标准库的`http`包存在同样的问题，有处理I/O的连接对象，却没有HTTP解析器。如果你希望`requests`库支持异步编程，那么你可能要失望了，因为`requests`从设计上就是同步编程。拥有异步编程能力让Python社区有机会解决没有多层网络栈抽象的问题。现在我们的优势是编写异步代码不会比同步代码难上多少，因此填补异步编程空白的工具，可以在同步异步两种环境下工作。
+
+我还希望Python可以增加`async`协程对`yield`语句的支持。这可能需要增加一个新的关键字(也许是`anticipate`?)，但只用`async`关键字无法实现事件循环的现状实在不尽人意。幸运的是，在这一点上我不是一个人，PEP 492的作者与我观点相同，我觉得我的愿望很有可能成为现实。
+
+## 结论
+
