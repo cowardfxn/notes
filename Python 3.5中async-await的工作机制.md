@@ -1,6 +1,6 @@
 # Python 3.5中async/await的工作机制
 
-> [原文链接](https://snarky.ca/how-the-heck-does-async-await-work-in-python-3-5/)
+> 多处翻译出于自己理解，如有疑惑请参考原文 [原文链接](https://snarky.ca/how-the-heck-does-async-await-work-in-python-3-5/)
 
 身为[Python](https://www.python.org/)核心开发组的成员，我对于这门语言的各种细节充满好奇。尽管我很清楚自己不可能对这门语言做到全知全能，但哪怕是为了能够解决各种issue和参与常规的语言设计工作，我也觉得有必要试着接触和理解Python的内核，弄清楚在底层它是怎么工作的。
 
