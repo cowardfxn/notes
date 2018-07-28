@@ -1,0 +1,14 @@
+
+## docker-compose
+多个服务同时并存，可以设置它们使用相同的networks，在服务内部，通过其他服务的名称进行服务间的相互访问。  
+docker-compose版本2语法中的links指令，指定服务名称与当前服务所使用变量的映射关系，作用相同，在版本3中可以设置networks而不用links
+
+指定docker服务的volume可以实现服务运行数据的缓存，这样可以将container内部的数据保存在本地磁盘上，可以防止因container丢失引起的数据丢失
+
+## Jenkins
+Jenkins所执行的命令，在运行系统上必须有相应的软件支持，否则无法运行  
+使用Jenkins除了直接安装在本地系统上，也可以使用docker镜像jenkins/blueocean，将container的8080端口映射到本地，即可使用Jenkins服务
+
+Jenkins的pipeline脚本使用内部定义的语法指令，groovy据说不会继续使用
+
+Jenkins可以设定通过URL以http请求的形式出发job的build过程，因此可以在github的项目中将push或者其他版本变化的webhook设置为Jenkins上job对应的URL，以此实现基于Jenkins的github版本自动部署
