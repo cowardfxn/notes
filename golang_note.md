@@ -249,7 +249,7 @@ pointer | nil
 
 向函数中传递指针变量，函数将可以直接操作定义在函数外部的值，对他们进行改变
 
-####结构体
+#### 结构体
 数组可以存储同一类型的数据，而结构体可以存储不同类型的数据  
 结构体的声明需要使用type和struct两个关键字，其中，struct定义了一个新的数据类型，type语句设定结构体的名称  
 从struct语句的角度来看，结构体声明语句的形式与变量声明类似，只是用的是type而不是var关键字  
@@ -271,7 +271,7 @@ type struct_type_name struct {
 可以通过"."号访问结构体内部的成员:  
 `struct_variable_name.member = newValue`
 
-对于指向结构体的指针变量，可以直接使用结构体指针访问结构体的成员:  
+对于指向结构体的*指针变量*，可以直接使用结构体指针访问结构体的成员:  
 `struct_pointer.member`
 
 而不能以`*struct_pointer.member`的形式
@@ -293,7 +293,7 @@ make函数生成的切片会被填充上默认值，生成后不会是nil
 数组切片的范围包括startIndex，但是不包括endIndex，右开放区间，省略index时默认使用数组起始或数组末尾  
 与Python的数组切片不同，切片末尾没有-1、-2这样的写法
 
-`len(slice_name)`函数可以取得切片的长度，也可用于获取定长的数组的长度  
+`len(slice_name)`函数可以取得切片的实际长度，也可用于获取定长的数组的长度  
 `cap(slice_name)`函数用于获取切片的最大长度  
 
 切片在被声明后，未初始化之前的值是nil  
@@ -320,7 +320,7 @@ map是无序的键值对集合，使用hash表实现，可以通过range进行�
 #### 类型转换
 `type_name(expression)` 变量类型强转
 
-Go中，不同类型的数值变量，无法直接进行数学运算
+Go中没有隐式类型转换，因此不同类型的数值变量，无法直接进行数学运算
 
 #### 接口
 Go语言的一种数据结构，将不同的函数与不同的结构体绑定，然后将这些函数记录在接口声明中，作为接口实例的方法供集中调用
@@ -402,7 +402,7 @@ func (err errStruct) Error() [string] {
 #### channel
 channel是有类型的管道，可以使用"<-"符号对其发送或接收值:  
 `ch <- v` 将v送入channel ch  
-`v := <- ch` 从channel ch接收值，赋给变量v
+`v := <- ch` 从channel ch接收值，赋给变量v  
 可以理解为箭头就是数据流的方向
 
 channel使用时必须使用make函数初始化  
@@ -410,7 +410,7 @@ channel使用时必须使用make函数初始化
 
 默认情况下，无论是写入channel还是从channel接收数据，如果另一端没有准备好，则发送和接收操作都会阻塞，这样可以保证不同的goroutine在没有明确的锁或状态竞争变量的情况下进行同步
 
-##### hannel状态
+##### channel状态
 可以通过赋值操作的第二个返回值，检查channel是否已经被关闭  
 `v, ok := <- ch` ok为true表示channel正常，为false表示channel已被关闭
 
@@ -433,7 +433,7 @@ for v := range ch {
 channel也可以带缓冲空间，初始化时make函数的第二个参数，表示channel的缓冲长度  
 `ch := make(chan byte, 100)`
 
-向缓冲channel发送数据时，只有缓冲区满的时候才会阻塞，反过来，从缓冲channel读取数据时，如果channel为空，则此时读取操作也会阻塞
+向缓冲channel发送数据时，只有缓冲区满的时候才会阻塞，反过来，从缓冲channel读取数据时，如果channel为空，则此时读取操作才会阻塞
 
 ##### select
 select可以让一个goroutine在多个channel上等待，阻塞直到某个channel可以继续执行为止  
