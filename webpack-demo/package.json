@@ -24,7 +24,7 @@
         "xml-loader": "^1.2.1"
     },
     "dependencies": {
-        "css-loader": "^0.28.10",
+        "css-loader": "^6.7.2",
         "lodash": "^4.17.5",
         "style-loader": "^0.20.3"
     }
