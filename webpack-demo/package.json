@@ -14,7 +14,7 @@
     "license": "ISC",
     "devDependencies": {
         "clean-webpack-plugin": "^0.1.19",
-        "csv-loader": "^2.1.1",
+        "csv-loader": "^3.0.5",
         "file-loader": "^1.1.11",
         "html-webpack-plugin": "^5.5.0",
         "uglifyjs-webpack-plugin": "^1.2.2",
